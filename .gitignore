@@ -18,6 +18,8 @@ browser-profile/
 browser-profiles/
 .playwright/
 profiles/
+.auth/
+auth-state/
 **/Cookies
 **/Cookies-journal
 **/Local Storage/
@@ -25,6 +27,10 @@ profiles/
 **/IndexedDB/
 cookies*.json
 session*.json
+tokens*.json
+*.cookies
+*.session
+*.token
 *.har
 *.sqlite
 *.sqlite-journal
@@ -34,6 +40,12 @@ tmp/
 temp/
 screenshots/
 research-artifacts/
+*-temp.png
+*-temp.jpg
+*-temp.jpeg
+*.tmp.png
+*.tmp.jpg
+*.tmp.jpeg
 
 # Source maps are not part of the release
 *.map
