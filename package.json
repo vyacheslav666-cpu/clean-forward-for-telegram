@@ -1,0 +1,30 @@
+{
+  "name": "clean-forward-for-telegram",
+  "version": "0.1.0",
+  "description": "Experimental Tampermonkey userscript for preparing clean copies of Telegram messages.",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "telegram",
+    "tampermonkey",
+    "userscript"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite build --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "validate": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0",
+    "typescript": "^5.9.2",
+    "vite": "^6.1.0",
+    "vitest": "^3.2.4"
+  }
+}

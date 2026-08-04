@@ -1,0 +1,45 @@
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+
+# Local configuration and logs
+*.log
+.env
+.env.*
+!.env.example
+*.tmp
+*.temp
+
+# Local browser state and authenticated test data
+.browser-profile/
+browser-profile/
+browser-profiles/
+.playwright/
+profiles/
+**/Cookies
+**/Cookies-journal
+**/Local Storage/
+**/Session Storage/
+**/IndexedDB/
+cookies*.json
+session*.json
+*.har
+*.sqlite
+*.sqlite-journal
+
+# Temporary research artifacts
+tmp/
+temp/
+screenshots/
+research-artifacts/
+
+# Source maps are not part of the release
+*.map
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
