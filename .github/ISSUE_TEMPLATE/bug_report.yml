@@ -1,0 +1,49 @@
+name: Bug report
+description: Сообщить о воспроизводимой ошибке
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Не прикладывайте реальные сообщения, названия чатов, peerId, cookies, session data или снимки авторизованного интерфейса.
+  - type: input
+    id: version
+    attributes:
+      label: Версия
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Окружение
+      description: Браузер, версия Tampermonkey и операционная система.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги воспроизведения
+      description: Используйте только обезличенные данные.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Фактическое поведение
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Проверка приватности
+      options:
+        - label: Я удалил(а) все персональные данные и секреты из отчёта.
+          required: true
