@@ -103,6 +103,7 @@ const PICKER_STYLES = `
     cursor: pointer;
   }
   .recipient:hover { background: var(--cf-hover); }
+  .recipient[hidden] { display: none; }
   .recipient[aria-pressed="true"] { background: var(--cf-selected); }
   .recipient:disabled { cursor: not-allowed; opacity: 0.55; }
   .avatar {
@@ -195,6 +196,7 @@ export class RecipientPicker {
   private actions: RecipientPickerActions | null = null;
   private rows: RecipientRow[] = [];
   private selectedCount = 0;
+  private focusGuardController: AbortController | null = null;
 
   public constructor() {
     this.host = document.createElement("div");
@@ -299,11 +301,13 @@ export class RecipientPicker {
     this.applyTheme();
     this.host.hidden = false;
     this.activateEscapeLifecycle();
+    this.activateFocusGuard();
     this.searchInput.focus();
   }
 
   /** Hides the popup and drops callbacks and selected recipient state. */
   public hide(): void {
+    this.deactivateFocusGuard();
     this.escapeLifecycle.deactivate();
     this.host.hidden = true;
     this.actions = null;
@@ -433,6 +437,62 @@ export class RecipientPicker {
       shouldHandle: () => this.host.isConnected && this.isVisible() && this.ownsCurrentFocus(),
       onEscape: () => this.cancel(),
     });
+  }
+
+  private activateFocusGuard(): void {
+    this.deactivateFocusGuard();
+    const controller = new AbortController();
+    this.focusGuardController = controller;
+    window.addEventListener(
+      "focusin",
+      (event) => {
+        const target = event.target;
+        const externalEditor =
+          target instanceof Element && target.matches('input, textarea, [contenteditable="true"]');
+        if (
+          externalEditor &&
+          this.host.isConnected &&
+          this.isVisible() &&
+          !this.searchInput.disabled &&
+          !this.ownsCurrentFocus()
+        ) {
+          this.searchInput.focus();
+        }
+      },
+      { capture: true, signal: controller.signal },
+    );
+    window.addEventListener(
+      "focusout",
+      (event) => {
+        const nextTarget = event.relatedTarget;
+        const lostToDocument =
+          nextTarget === null ||
+          nextTarget === document.body ||
+          nextTarget === document.documentElement;
+        if (!lostToDocument) {
+          return;
+        }
+
+        // A Telegram rerender can remove its editor during the focus transition, leaving
+        // document.body active. Recheck after the browser finishes that focus transaction.
+        queueMicrotask(() => {
+          if (
+            this.host.isConnected &&
+            this.isVisible() &&
+            !this.searchInput.disabled &&
+            !this.host.shadowRoot?.activeElement
+          ) {
+            this.searchInput.focus();
+          }
+        });
+      },
+      { capture: true, signal: controller.signal },
+    );
+  }
+
+  private deactivateFocusGuard(): void {
+    this.focusGuardController?.abort();
+    this.focusGuardController = null;
   }
 
   private ownsCurrentFocus(): boolean {
