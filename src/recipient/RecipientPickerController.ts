@@ -5,13 +5,17 @@ import type { TelegramChatNavigator } from "../telegram/TelegramChatNavigator";
 import type { RecipientPicker, RecipientPickerActions } from "../ui/RecipientPicker";
 import type { Logger } from "../utils/logger";
 import type { Recipient } from "./Recipient";
-import { snapshotRecipient } from "./Recipient";
+import { RecipientSelection } from "./RecipientSelection";
 import type { RecipientSourceAdapter } from "./RecipientSourceAdapter";
 
-/** Runs one single-recipient flow while PendingTransfer remains the payload source of truth. */
+const MULTI_RECIPIENT_MESSAGE =
+  "Отправка нескольким получателям пока не реализована. Снимите лишние выборы или нажмите «Отмена».";
+
+/** Runs recipient selection while limiting the preparation pipeline to one chosen chat. */
 export class RecipientPickerController {
   private session: AbortController | null = null;
   private recipients: readonly Recipient[] = [];
+  private readonly selection = new RecipientSelection();
 
   public constructor(
     private readonly source: RecipientSourceAdapter,
@@ -25,6 +29,7 @@ export class RecipientPickerController {
   /** Opens a new picker session for the payload already stored in PendingTransfer. */
   public async open(): Promise<void> {
     this.abortSession();
+    this.selection.clear();
     const session = new AbortController();
     this.session = session;
     const actions = this.createActions(session);
@@ -55,6 +60,7 @@ export class RecipientPickerController {
 
   /** Cancels the picker flow and clears only project-owned pending data. */
   public cancel(): void {
+    this.selection.clear();
     this.abortSession();
     this.pending.clear();
     this.picker.hide();
@@ -63,71 +69,110 @@ export class RecipientPickerController {
 
   /** Stops all project waits when the parent controller is disposed. */
   public stop(): void {
+    this.selection.clear();
     this.abortSession();
     this.picker.hide();
   }
 
   private createActions(session: AbortController): RecipientPickerActions {
     return {
-      onNext: (recipient) => void this.confirm(recipient, session),
+      onToggle: (recipient) => this.toggleRecipient(recipient, session),
+      onNext: (legacyRecipient) => {
+        // Keeping the optional argument lets older test doubles compile; production UI always
+        // toggles through onToggle, so controller-owned state remains authoritative.
+        if (legacyRecipient && this.selection.count() === 0) {
+          this.selection.toggle(legacyRecipient);
+        }
+        void this.confirm(session);
+      },
       onCancel: () => this.cancel(),
     };
   }
 
-  private async confirm(recipient: Recipient, session: AbortController): Promise<void> {
+  private toggleRecipient(recipient: Recipient, session: AbortController): void {
+    if (this.session !== session || session.signal.aborted) {
+      return;
+    }
+    this.selection.toggle(recipient);
+    this.picker.updateSelection(this.selection.peerKeys());
+    this.picker.setError("");
+  }
+
+  private async confirm(session: AbortController): Promise<void> {
     if (this.session !== session || session.signal.aborted || !this.pending.hasValue()) {
       return;
     }
 
-    const selected = snapshotRecipient(recipient);
+    const selectedRecipients = this.selection.snapshot();
+    if (selectedRecipients.length === 0) {
+      return;
+    }
+    if (selectedRecipients.length > 1) {
+      this.picker.setError(MULTI_RECIPIENT_MESSAGE);
+      return;
+    }
+
+    const selected = selectedRecipients[0];
+    if (!selected) {
+      return;
+    }
+    const payload = this.pending.beginInsertion();
+    if (!payload) {
+      return;
+    }
+
     this.picker.setBusy(true);
     this.picker.hide();
-    const navigation = await this.navigator.navigate(selected, session.signal);
-    if (session.signal.aborted || this.session !== session) {
-      return;
-    }
+    try {
+      const navigation = await this.navigator.navigate(selected, session.signal);
+      if (session.signal.aborted || this.session !== session) {
+        return;
+      }
 
-    if (!navigation.success) {
-      this.reopenAfterError(selected.peerKey, navigation.message, session);
-      return;
-    }
+      if (!navigation.success) {
+        this.reopenAfterError(navigation.message, session);
+        return;
+      }
 
-    const payload = this.pending.peek();
-    if (!payload) {
-      this.reopenAfterError(selected.peerKey, "Временный payload больше недоступен.", session);
-      return;
-    }
+      const result = await this.composer.insert(payload, selected.peerKey);
+      if (session.signal.aborted || this.session !== session) {
+        return;
+      }
 
-    const result = await this.composer.insert(payload, selected.peerKey);
-    if (session.signal.aborted || this.session !== session) {
-      return;
-    }
+      if (!result.success) {
+        const previewClosed = await this.composer.cancelPreparedPreview();
+        const message = previewClosed
+          ? result.message
+          : `${result.message} Закройте media preview Telegram вручную перед повтором.`;
+        this.reopenAfterError(message, session);
+        return;
+      }
 
-    if (!result.success) {
-      const previewClosed = await this.composer.cancelPreparedPreview();
-      const message = previewClosed
-        ? result.message
-        : `${result.message} Закройте media preview Telegram вручную перед повтором.`;
-      this.reopenAfterError(selected.peerKey, message, session);
-      return;
+      this.pending.completeInsertion();
+      this.selection.clear();
+      this.session = null;
+      this.recipients = [];
+      this.log.info(result.message);
+    } catch (error) {
+      if (session.signal.aborted || this.session !== session) {
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Операция подготовки прервана.";
+      this.log.error("Необработанная ошибка recipient flow.", error);
+      this.reopenAfterError(message, session);
     }
-
-    this.pending.clear();
-    this.session = null;
-    this.recipients = [];
-    this.log.info(result.message);
   }
 
   private reopenAfterError(
-    selectedPeerKey: string,
     message: string,
     session: AbortController,
   ): void {
     if (this.session !== session || session.signal.aborted) {
       return;
     }
+    this.pending.restoreAfterFailure();
     this.picker.show(this.recipients, this.createActions(session), {
-      selectedPeerKey,
+      selectedPeerKeys: this.selection.peerKeys(),
       errorMessage: message,
     });
     this.log.warn("Recipient flow остановлен до вставки; payload сохранён для повтора.");
@@ -137,6 +182,7 @@ export class RecipientPickerController {
     this.session?.abort();
     this.session = null;
     this.recipients = [];
+    this.pending.restoreAfterFailure();
     this.navigator.cancel();
   }
 

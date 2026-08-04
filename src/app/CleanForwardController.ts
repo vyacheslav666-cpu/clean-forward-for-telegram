@@ -88,7 +88,10 @@ export class CleanForwardController {
         return;
       }
 
-      this.pending.select(payload);
+      if (!this.pending.select(payload)) {
+        this.log.warn("Новая операция отклонена: предыдущая вставка ещё выполняется.");
+        return;
+      }
       this.log.info("Сообщение временно сохранено в памяти.");
       await this.recipients.open();
     } catch (error) {

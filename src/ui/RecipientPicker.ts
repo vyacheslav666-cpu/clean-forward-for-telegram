@@ -1,5 +1,6 @@
 /** Renders the isolated single-recipient picker without knowing Telegram DOM selectors. */
 import type { Recipient } from "../recipient/Recipient";
+import { EscapeKeyLifecycle } from "../utils/EscapeKeyLifecycle";
 
 const PICKER_HOST_ATTRIBUTE = "data-clean-forward-recipient-picker";
 const PICKER_TITLE = "Отправить как новое";
@@ -8,6 +9,7 @@ const NEXT_LABEL = "Далее";
 const CANCEL_LABEL = "Отмена";
 const EMPTY_MESSAGE = "Ничего не найдено";
 const LOADING_MESSAGE = "Загружаем чаты…";
+const SELECTED_LABEL = "Выбрано";
 
 const PICKER_STYLES = `
   :host {
@@ -120,10 +122,25 @@ const PICKER_STYLES = `
   .title, .subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .title { font-size: 15px; font-weight: 600; }
   .subtitle { margin-top: 3px; color: var(--cf-muted); font-size: 13px; }
-  .check { color: #3390ec; font-size: 19px; opacity: 0; }
-  .recipient[aria-pressed="true"] .check { opacity: 1; }
+  .check {
+    display: grid;
+    width: 20px;
+    height: 20px;
+    place-items: center;
+    border: 2px solid var(--cf-border);
+    border-radius: 50%;
+    color: transparent;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .recipient[aria-pressed="true"] .check {
+    border-color: #3390ec;
+    background: #3390ec;
+    color: white;
+  }
   .empty { margin: 0; padding: 26px 16px; color: var(--cf-muted); text-align: center; }
   .footer { justify-content: flex-end; border-top: 1px solid var(--cf-border); }
+  .selection-count { margin-right: auto; color: var(--cf-muted); font-size: 13px; }
   .action {
     min-height: 38px;
     border: 0;
@@ -145,13 +162,14 @@ const PICKER_STYLES = `
 
 /** Callbacks emitted by the recipient picker. */
 export interface RecipientPickerActions {
-  readonly onNext: (recipient: Recipient) => void;
+  readonly onToggle?: (recipient: Recipient) => void;
+  readonly onNext: (recipient?: Recipient) => void;
   readonly onCancel: () => void;
 }
 
 /** Options used when showing a loaded recipient list. */
 export interface RecipientPickerOptions {
-  readonly selectedPeerKey?: string;
+  readonly selectedPeerKeys?: readonly string[];
   readonly errorMessage?: string;
 }
 
@@ -161,7 +179,7 @@ interface RecipientRow {
   readonly searchText: string;
 }
 
-/** Shadow DOM popup for local search and explicit confirmation of exactly one recipient. */
+/** Shadow DOM popup that renders externally owned multi-recipient selection state. */
 export class RecipientPicker {
   private readonly host: HTMLDivElement;
   private readonly dialog: HTMLElement;
@@ -169,12 +187,14 @@ export class RecipientPicker {
   private readonly status: HTMLParagraphElement;
   private readonly list: HTMLDivElement;
   private readonly empty: HTMLParagraphElement;
+  private readonly selectionCount: HTMLSpanElement;
   private readonly nextButton: HTMLButtonElement;
   private readonly cancelButton: HTMLButtonElement;
   private readonly closeButton: HTMLButtonElement;
+  private readonly escapeLifecycle = new EscapeKeyLifecycle();
   private actions: RecipientPickerActions | null = null;
   private rows: RecipientRow[] = [];
-  private selectedRecipient: Recipient | null = null;
+  private selectedCount = 0;
 
   public constructor() {
     this.host = document.createElement("div");
@@ -188,6 +208,7 @@ export class RecipientPicker {
     overlay.className = "overlay";
     this.dialog = document.createElement("section");
     this.dialog.className = "dialog";
+    this.dialog.tabIndex = -1;
     this.dialog.setAttribute("role", "dialog");
     this.dialog.setAttribute("aria-modal", "true");
     this.dialog.setAttribute("aria-labelledby", "clean-forward-recipient-title");
@@ -219,6 +240,7 @@ export class RecipientPicker {
     this.list = document.createElement("div");
     this.list.className = "list";
     this.list.setAttribute("role", "listbox");
+    this.list.setAttribute("aria-multiselectable", "true");
     this.empty = document.createElement("p");
     this.empty.className = "empty";
     this.empty.textContent = EMPTY_MESSAGE;
@@ -227,10 +249,12 @@ export class RecipientPicker {
 
     const footer = document.createElement("footer");
     footer.className = "footer";
+    this.selectionCount = document.createElement("span");
+    this.selectionCount.className = "selection-count";
     this.cancelButton = this.createButton(CANCEL_LABEL, "action cancel", () => this.cancel());
     this.nextButton = this.createButton(NEXT_LABEL, "action next", () => this.confirm());
     this.nextButton.disabled = true;
-    footer.append(this.cancelButton, this.nextButton);
+    footer.append(this.selectionCount, this.cancelButton, this.nextButton);
 
     this.dialog.append(header, searchWrap, this.status, this.list, footer);
     overlay.append(this.dialog);
@@ -240,9 +264,11 @@ export class RecipientPicker {
 
   /** Opens a cancellable loading state before Telegram dialog rows are read. */
   public showLoading(actions: RecipientPickerActions): void {
+    this.ensureMounted();
     this.actions = actions;
     this.rows = [];
-    this.selectedRecipient = null;
+    this.selectedCount = 0;
+    this.updateSelectionCount();
     this.list.replaceChildren(this.empty);
     this.empty.textContent = LOADING_MESSAGE;
     this.empty.hidden = false;
@@ -252,37 +278,40 @@ export class RecipientPicker {
     this.setBusy(false);
     this.applyTheme();
     this.host.hidden = false;
+    this.activateEscapeLifecycle();
+    this.dialog.focus();
   }
 
-  /** Shows loaded dialogs while preserving only an explicitly requested selection. */
+  /** Shows loaded dialogs and renders the selection snapshot owned by the controller. */
   public show(
     recipients: readonly Recipient[],
     actions: RecipientPickerActions,
     options: RecipientPickerOptions = {},
   ): void {
+    this.ensureMounted();
     this.actions = actions;
     this.searchInput.value = "";
     this.searchInput.disabled = false;
-    this.selectedRecipient =
-      recipients.find(
-        (recipient) =>
-          recipient.supported && recipient.peerKey === options.selectedPeerKey,
-      ) ?? null;
     this.renderRows(recipients);
+    this.updateSelection(options.selectedPeerKeys ?? []);
     this.setError(options.errorMessage ?? "");
     this.setBusy(false);
     this.applyTheme();
     this.host.hidden = false;
+    this.activateEscapeLifecycle();
     this.searchInput.focus();
   }
 
   /** Hides the popup and drops callbacks and selected recipient state. */
   public hide(): void {
+    this.escapeLifecycle.deactivate();
     this.host.hidden = true;
     this.actions = null;
-    this.selectedRecipient = null;
+    this.selectedCount = 0;
     this.rows = [];
     this.list.replaceChildren(this.empty);
+    this.updateSelectionCount();
+    this.host.remove();
   }
 
   /** Reports whether the project popup is currently visible. */
@@ -299,7 +328,23 @@ export class RecipientPicker {
       row.button.disabled = busy || !row.recipient.supported;
     }
     this.nextButton.textContent = busy ? "Открываем чат…" : NEXT_LABEL;
-    this.nextButton.disabled = busy || !this.selectedRecipient;
+    this.nextButton.disabled = busy || this.selectedCount === 0;
+  }
+
+  /** Applies externally owned selected peer keys without disturbing the current search query. */
+  public updateSelection(selectedPeerKeys: readonly string[]): void {
+    const selected = new Set(selectedPeerKeys);
+    this.selectedCount = 0;
+    for (const row of this.rows) {
+      const rowSelected = row.recipient.supported && selected.has(row.recipient.peerKey);
+      row.button.setAttribute("aria-pressed", String(rowSelected));
+      row.button.setAttribute("aria-selected", String(rowSelected));
+      if (rowSelected) {
+        this.selectedCount += 1;
+      }
+    }
+    this.updateSelectionCount();
+    this.nextButton.disabled = this.selectedCount === 0;
   }
 
   /** Shows or clears a recoverable picker error. */
@@ -312,7 +357,6 @@ export class RecipientPicker {
     this.rows = recipients.map((recipient) => this.createRecipientRow(recipient));
     this.list.replaceChildren(...this.rows.map((row) => row.button), this.empty);
     this.empty.textContent = EMPTY_MESSAGE;
-    this.updateSelection();
     this.applyFilter();
   }
 
@@ -322,7 +366,7 @@ export class RecipientPicker {
     button.className = "recipient";
     button.setAttribute("role", "option");
     button.disabled = !recipient.supported;
-    button.addEventListener("click", () => this.select(recipient));
+    button.addEventListener("click", () => this.actions?.onToggle?.(recipient));
 
     const avatar = document.createElement("span");
     avatar.className = "avatar";
@@ -360,23 +404,6 @@ export class RecipientPicker {
     };
   }
 
-  private select(recipient: Recipient): void {
-    if (!recipient.supported) {
-      return;
-    }
-    this.selectedRecipient = recipient;
-    this.updateSelection();
-  }
-
-  private updateSelection(): void {
-    for (const row of this.rows) {
-      const selected = row.recipient.peerKey === this.selectedRecipient?.peerKey;
-      row.button.setAttribute("aria-pressed", String(selected));
-      row.button.setAttribute("aria-selected", String(selected));
-    }
-    this.nextButton.disabled = !this.selectedRecipient;
-  }
-
   private applyFilter(): void {
     const query = this.normalizeSearchText(this.searchInput.value);
     let visibleCount = 0;
@@ -391,14 +418,47 @@ export class RecipientPicker {
   }
 
   private confirm(): void {
-    if (!this.selectedRecipient || this.nextButton.disabled) {
+    if (this.selectedCount === 0 || this.nextButton.disabled) {
       return;
     }
-    this.actions?.onNext(this.selectedRecipient);
+    this.actions?.onNext();
   }
 
   private cancel(): void {
     this.actions?.onCancel();
+  }
+
+  private activateEscapeLifecycle(): void {
+    this.escapeLifecycle.activate({
+      shouldHandle: () => this.host.isConnected && this.isVisible() && this.ownsCurrentFocus(),
+      onEscape: () => this.cancel(),
+    });
+  }
+
+  private ownsCurrentFocus(): boolean {
+    let active: Element | null = document.activeElement;
+    while (active?.shadowRoot?.activeElement) {
+      active = active.shadowRoot.activeElement;
+    }
+
+    // Opening focuses our search. If Telegram places another modal above the picker, its
+    // control becomes the deep active element and Escape must be left to that modal.
+    return (
+      active === null ||
+      active === document.body ||
+      active === document.documentElement ||
+      this.host.shadowRoot?.contains(active) === true
+    );
+  }
+
+  private updateSelectionCount(): void {
+    this.selectionCount.textContent = `${SELECTED_LABEL}: ${this.selectedCount}`;
+  }
+
+  private ensureMounted(): void {
+    if (!this.host.isConnected) {
+      document.body.append(this.host);
+    }
   }
 
   private normalizeSearchText(value: string): string {
