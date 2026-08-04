@@ -1,8 +1,8 @@
 # Telegram Web K: исследование upload preview одной картинки
 
-Дата проверки: 2026-08-03. Интерфейс: авторизованный Telegram Web K в Chrome, чат `Saved Messages`. Тестовый файл: нейтральное системное JPEG-изображение Windows, 1920×1200. Кнопка Send и горячие клавиши отправки не использовались.
+Дата проверки: 2026-08-03. Интерфейс: Telegram Web K в изолированной тестовой среде. Использовались только синтетические подписи и нейтральное тестовое изображение; идентификаторы, названия чатов, сообщения и данные сессии не сохранялись. Кнопка Send и горячие клавиши отправки не использовались.
 
-Проверка исходного кода относится к `morethanwords/tweb` commit [`e52b5d9318848ab83316cb53138358cf49d2a27f`](https://github.com/morethanwords/tweb/commit/e52b5d9318848ab83316cb53138358cf49d2a27f) от 2026-07-23. DOM и поведение дополнительно подтверждены в живой сессии.
+Проверка исходного кода относится к `morethanwords/tweb` commit [`e52b5d9318848ab83316cb53138358cf49d2a27f`](https://github.com/morethanwords/tweb/commit/e52b5d9318848ab83316cb53138358cf49d2a27f) от 2026-07-23. DOM и поведение дополнительно проверены без сохранения пользовательских данных.
 
 ## Краткий вывод
 
@@ -72,11 +72,11 @@ const fileInputs = chatInput?.querySelectorAll<HTMLInputElement>(
    fileInput.dispatchEvent(new Event('change', {bubbles: true}));
    ```
 
-   Этот фрагмент является рекомендацией для реализации, а не отдельным живым экспериментом: в Chrome исследование использовало нативный chooser. Критически важно, чтобы до `change` Telegram уже находился в media-режиме. Простая ручная установка `accept` не заменяет внутренний `willAttachType`.
+   Этот фрагмент является рекомендацией для реализации, а не отдельной проверкой: в Chrome исследование использовало нативный chooser. Критически важно, чтобы до `change` Telegram уже находился в media-режиме. Простая ручная установка `accept` не заменяет внутренний `willAttachType`.
 
 5. На `change` Telegram копирует `Array.from(fileInput.files)`, создаёт `PopupNewMedia`, а затем очищает `fileInput.value`: [`input.ts` L1432-L1448](https://github.com/morethanwords/tweb/blob/e52b5d9318848ab83316cb53138358cf49d2a27f/src/components/chat/input.ts#L1432-L1448).
 
-6. Для картинки popup создаёт локальный object URL, декодирует изображение и при необходимости локально масштабирует/перекодирует его. Для проверенного JPEG preview получил `blob:https://web.telegram.org/...`, `img.complete === true`, `naturalWidth === 1920`, `naturalHeight === 1200`. Соответствующий путь находится в [`newMedia.ts` L1149-L1338](https://github.com/morethanwords/tweb/blob/e52b5d9318848ab83316cb53138358cf49d2a27f/src/components/popups/newMedia.ts#L1149-L1338).
+6. Для картинки popup создаёт локальный object URL, декодирует изображение и при необходимости локально масштабирует/перекодирует его. В тестовой среде preview использовал локальный `blob:` URL и полностью декодированное изображение. Соответствующий путь находится в [`newMedia.ts` L1149-L1338](https://github.com/morethanwords/tweb/blob/e52b5d9318848ab83316cb53138358cf49d2a27f/src/components/popups/newMedia.ts#L1149-L1338).
 
 7. После готовности caption заполняется через нативный editing path, затем состояние и DOM проверяются. Send не нажимается.
 
@@ -120,18 +120,18 @@ Preview не имеет `role="dialog"`, `aria-label` или `data-testid`. По
   .simple-message-input-input[contenteditable="true"]:not(.input-field-input-fake)
 ```
 
-В эксперименте нативная вставка строки
+В обезличенной проверке нативная вставка синтетической строки
 
 ```text
-Тестовая подпись 🧪
-Вторая строка 🙂
+[fixture-caption-line-a] 🧪
+[fixture-caption-line-b] 🙂
 ```
 
 дала DOM:
 
 ```html
-Тестовая подпись <img src="assets/img/emoji/1f9ea.png" class="emoji emoji-image" alt="🧪">
-Вторая строка <img src="assets/img/emoji/1f642.png" class="emoji emoji-image" alt="🙂">
+[fixture-caption-line-a] <img src="assets/img/emoji/1f9ea.png" class="emoji emoji-image" alt="🧪">
+[fixture-caption-line-b] <img src="assets/img/emoji/1f642.png" class="emoji emoji-image" alt="🙂">
 ```
 
 Перевод строки остался текстовым `\n`, а emoji были преобразованы Telegram в `img.emoji` с исходным символом в `alt`. Поэтому проверять результат только через `textContent` нельзя: emoji там отсутствуют. Для чтения/проверки нужно рекурсивно объединять text nodes, `BR` как `\n` и `IMG[alt]` как значение `alt`, как уже делает `extractReadableText` проекта.
@@ -163,7 +163,7 @@ Preview не имеет `role="dialog"`, `aria-label` или `data-testid`. По
 - `beforeinput` — Telegram слушает его на уровне document для rich-input обработки: [`richInputHandler.ts` L35-L48](https://github.com/morethanwords/tweb/blob/e52b5d9318848ab83316cb53138358cf49d2a27f/src/helpers/dom/richInputHandler.ts#L35-L48). Его не следует синтезировать отдельно от фактического редактирования. Нативная печать/`insertText` должна породить согласованную пару `beforeinput` → изменение DOM → `input`.
 - `change` — для caption не используется и не нужен.
 
-Живой эксперимент подтвердил, что браузерная нативная вставка многострочного текста с emoji запускает нужную нормализацию. Отдельно доказать, что искусственный `input` без `beforeinput` безопасен, нельзя; такой fallback не рекомендуется.
+Обезличенная проверка подтвердила, что браузерная нативная вставка многострочного текста с emoji запускает нужную нормализацию. Отдельно доказать, что искусственный `input` без `beforeinput` безопасен, нельзя; такой fallback не рекомендуется.
 
 ## 6. Критерий полной готовности preview
 
@@ -211,13 +211,13 @@ const ready = Boolean(
 
 Исходный код на `close` очищает внутренние `files` и `sendFileDetails`: [`newMedia.ts` L387-L397](https://github.com/morethanwords/tweb/blob/e52b5d9318848ab83316cb53138358cf49d2a27f/src/components/popups/newMedia.ts#L387-L397).
 
-После отмены в живой проверке:
+После отмены в обезличенной проверке:
 
 - активных media popup: 0;
 - `fileInput.value`: пустая строка;
 - основной real composer: пустой, класс `is-empty`;
 - fake composer: пустой;
-- активный peer: `Saved Messages`;
+- активный peer: обезличенная тестовая строка;
 - счётчик сообщений остался `341 messages`;
 - исходящих элементов со статусом `sending`: 0.
 
@@ -291,7 +291,7 @@ const ready = Boolean(
 ## Итоговая последовательность подтверждённого исследования
 
 ```text
-Saved Messages, пустой composer
+обезличенная тестовая строка, пустой composer
 → открыть attachment menu
 → выбрать Photo or Video
 → Telegram задаёт accept и media mode
