@@ -4,7 +4,12 @@ import { RecipientPicker } from "../../src/ui/RecipientPicker";
 
 const recipients: readonly Recipient[] = [
   { peerKey: "1", title: "Fixture recipient A", subtitle: "Fixture subtitle A", supported: true },
-  { peerKey: "2", title: "FIXTURE RECIPIENT B", subtitle: "Fixture subtitle B", supported: true },
+  {
+    peerKey: "2",
+    title: "FIXTURE RECIPIENT B",
+    subtitle: "Кириллический подзаголовок B",
+    supported: true,
+  },
   {
     peerKey: "3_99",
     title: "Unsupported fixture",
@@ -87,10 +92,22 @@ describe("RecipientPicker", () => {
     expect(rows()[1]?.hidden).toBe(false);
   });
 
+  it("does not render rows hidden by the search filter", () => {
+    const { shadow, rows } = renderPicker();
+    const search = shadow.querySelector<HTMLInputElement>(".search")!;
+    search.value = "fixture recipient b";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(rows()[0]?.hidden).toBe(true);
+    expect(rows()[1]?.hidden).toBe(false);
+    expect(shadow.querySelector("style")?.textContent).toMatch(
+      /\.recipient\[hidden\]\s*\{\s*display:\s*none;\s*\}/,
+    );
+  });
+
   it("supports Cyrillic local search", () => {
     const { shadow, rows } = renderPicker();
     const search = shadow.querySelector<HTMLInputElement>(".search")!;
-    search.value = "FIXTURE SUBTITLE B";
+    search.value = "КИРИЛЛИЧЕСКИЙ ПОДЗАГОЛОВОК";
     search.dispatchEvent(new Event("input", { bubbles: true }));
     expect(rows()[1]?.hidden).toBe(false);
     expect(rows()[0]?.hidden).toBe(true);
@@ -177,6 +194,131 @@ describe("RecipientPicker", () => {
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
+  it("restores search focus whenever Telegram reclaims or drops it", async () => {
+    const { shadow } = renderPicker();
+    const search = shadow.querySelector<HTMLInputElement>(".search")!;
+    const telegramCaption = document.createElement("div");
+    telegramCaption.tabIndex = 0;
+    telegramCaption.setAttribute("contenteditable", "true");
+    document.body.append(telegramCaption);
+    telegramCaption.focus();
+
+    expect(shadow.activeElement).toBe(search);
+
+    search.blur();
+    await Promise.resolve();
+
+    expect(shadow.activeElement).toBe(search);
+
+    telegramCaption.focus();
+
+    expect(shadow.activeElement).toBe(search);
+  });
+
+  it("recovers synchronously from a Telegram focusin steal", () => {
+    const { shadow } = renderPicker();
+    const search = shadow.querySelector<HTMLInputElement>(".search")!;
+    const focusSearch = vi.spyOn(search, "focus");
+    const telegramInput = document.createElement("textarea");
+    document.body.append(telegramInput);
+
+    focusSearch.mockClear();
+    telegramInput.focus();
+
+    expect(focusSearch).toHaveBeenCalledOnce();
+    expect(shadow.activeElement).toBe(search);
+  });
+
+  it("recovers from focusout to document.body in a microtask", async () => {
+    const { shadow } = renderPicker();
+    const search = shadow.querySelector<HTMLInputElement>(".search")!;
+    const focusSearch = vi.spyOn(search, "focus");
+
+    focusSearch.mockClear();
+    search.blur();
+    expect(focusSearch).not.toHaveBeenCalled();
+
+    await Promise.resolve();
+
+    expect(focusSearch).toHaveBeenCalledOnce();
+    expect(shadow.activeElement).toBe(search);
+  });
+
+  it("does not run a queued focus recovery after close", async () => {
+    const { picker, shadow } = renderPicker();
+    const search = shadow.querySelector<HTMLInputElement>(".search")!;
+    const focusSearch = vi.spyOn(search, "focus");
+
+    search.blur();
+    picker.hide();
+    focusSearch.mockClear();
+    await Promise.resolve();
+
+    expect(focusSearch).not.toHaveBeenCalled();
+  });
+
+  it("reopens with exactly one active focus guard", () => {
+    const { picker } = renderPicker();
+    picker.hide();
+    picker.show(recipients, { onToggle: vi.fn(), onNext: vi.fn(), onCancel: vi.fn() });
+    const shadow = document.querySelector<HTMLElement>("[data-clean-forward-recipient-picker]")!.shadowRoot!;
+    const search = shadow.querySelector<HTMLInputElement>(".search")!;
+    const focusSearch = vi.spyOn(search, "focus");
+    const telegramInput = document.createElement("input");
+    document.body.append(telegramInput);
+
+    telegramInput.focus();
+
+    expect(focusSearch).toHaveBeenCalledOnce();
+    expect(shadow.activeElement).toBe(search);
+  });
+
+  it("leaves a foreign non-text modal control usable", () => {
+    renderPicker();
+    const modalButton = document.createElement("button");
+    const activateModal = vi.fn();
+    modalButton.addEventListener("click", activateModal);
+    document.body.append(modalButton);
+
+    modalButton.focus();
+    modalButton.click();
+
+    expect(document.activeElement).toBe(modalButton);
+    expect(activateModal).toHaveBeenCalledOnce();
+  });
+
+  it("focuses search on open so typing filters without a manual click", () => {
+    const { shadow, rows } = renderPicker();
+    const search = shadow.querySelector<HTMLInputElement>(".search")!;
+    expect(shadow.activeElement).toBe(search);
+
+    search.value = "fixture recipient b";
+    search.dispatchEvent(new InputEvent("input", { bubbles: true, data: "b" }));
+
+    expect(rows()[0]?.hidden).toBe(true);
+    expect(rows()[1]?.hidden).toBe(false);
+  });
+
+  it("focus recovery leaves composer content untouched and never calls Send", () => {
+    const { shadow } = renderPicker();
+    const composer = document.createElement("div");
+    composer.setAttribute("contenteditable", "true");
+    composer.textContent = "existing composer text";
+    const send = document.createElement("button");
+    send.className = "btn-send";
+    const sendClick = vi.spyOn(send, "click");
+    const sendMessageWithForward = vi.fn();
+    Object.assign(window, { ChatInput: { sendMessageWithForward } });
+    document.body.append(composer, send);
+
+    composer.focus();
+
+    expect(shadow.activeElement).toBe(shadow.querySelector(".search"));
+    expect(composer.textContent).toBe("existing composer text");
+    expect(sendClick).not.toHaveBeenCalled();
+    expect(sendMessageWithForward).not.toHaveBeenCalled();
+  });
+
   it("keeps selection while filtering and restoring the list", () => {
     const { shadow, rows, selected } = renderPicker();
     rows()[0]?.click();
@@ -202,6 +344,20 @@ describe("RecipientPicker", () => {
     const { picker } = renderPicker();
     picker.show(recipients, { onToggle: vi.fn(), onNext: vi.fn(), onCancel: vi.fn() });
     expect(document.querySelectorAll("[data-clean-forward-recipient-picker]")).toHaveLength(1);
+  });
+
+  it("does not duplicate the search input listener when shown repeatedly", () => {
+    const { picker, shadow } = renderPicker();
+    const applyFilter = vi.spyOn(
+      picker as unknown as { applyFilter(): void },
+      "applyFilter",
+    );
+    picker.show(recipients, { onToggle: vi.fn(), onNext: vi.fn(), onCancel: vi.fn() });
+    applyFilter.mockClear();
+    const search = shadow.querySelector<HTMLInputElement>(".search")!;
+    search.value = "fixture";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(applyFilter).toHaveBeenCalledOnce();
   });
 
   it("cleanup removes popup DOM, Escape binding, and stale callbacks", () => {
