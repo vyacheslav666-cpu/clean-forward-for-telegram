@@ -1,5 +1,6 @@
 /** Coordinates recipient loading, confirmation, navigation, and message preparation. */
 import type { PendingTransfer } from "../domain/PendingTransfer";
+import type { DeliveryCoordinator } from "../delivery/DeliveryCoordinator";
 import type { ComposerAdapter } from "../telegram/ComposerAdapter";
 import type { TelegramChatNavigator } from "../telegram/TelegramChatNavigator";
 import type { RecipientPicker, RecipientPickerActions } from "../ui/RecipientPicker";
@@ -24,6 +25,7 @@ export class RecipientPickerController {
     private readonly composer: ComposerAdapter,
     private readonly pending: PendingTransfer,
     private readonly log: Logger,
+    private readonly delivery?: DeliveryCoordinator,
   ) {}
 
   /** Opens a new picker session for the payload already stored in PendingTransfer. */
@@ -55,7 +57,11 @@ export class RecipientPickerController {
 
   /** Rechecks navigation through the application's one shared MutationObserver. */
   public notifyDomChanged(): void {
-    this.navigator.notifyDomChanged();
+    if (this.delivery) {
+      this.delivery.notifyDomChanged();
+    } else {
+      this.navigator.notifyDomChanged();
+    }
   }
 
   /** Cancels the picker flow and clears only project-owned pending data. */
@@ -72,6 +78,7 @@ export class RecipientPickerController {
     this.selection.clear();
     this.abortSession();
     this.picker.hide();
+    this.delivery?.stop();
   }
 
   private createActions(session: AbortController): RecipientPickerActions {
@@ -107,6 +114,27 @@ export class RecipientPickerController {
     if (selectedRecipients.length === 0) {
       return;
     }
+
+    if (this.delivery) {
+      this.picker.hide();
+      const started = this.delivery.start(selectedRecipients);
+      if (!started) {
+        this.picker.show(this.recipients, this.createActions(session), {
+          selectedPeerKeys: this.selection.peerKeys(),
+          errorMessage: "Не удалось запустить отправку: другая операция уже выполняется.",
+        });
+        return;
+      }
+
+      // The picker session no longer owns asynchronous work once the coordinator has taken
+      // immutable recipient and payload snapshots.
+      session.abort();
+      this.session = null;
+      this.recipients = [];
+      this.selection.clear();
+      return;
+    }
+
     if (selectedRecipients.length > 1) {
       this.picker.setError(MULTI_RECIPIENT_MESSAGE);
       return;

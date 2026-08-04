@@ -7,7 +7,7 @@ const TAMPERMONKEY_HEADER = `// ==UserScript==
 // @name         Clean Forward for Telegram
 // @namespace    https://github.com/clean-forward-for-telegram
 // @version      0.1.0
-// @description  Prepares Telegram messages to be sent as new messages.
+// @description  Sends copied Telegram messages as new messages to selected chats.
 // @match        https://web.telegram.org/k/*
 // @grant        none
 // @run-at       document-idle

@@ -1,5 +1,6 @@
 /** Builds and starts the userscript dependency graph after Telegram's document is ready. */
 import { CleanForwardController } from "./app/CleanForwardController";
+import { DeliveryCoordinator } from "./delivery/DeliveryCoordinator";
 import { PendingTransfer } from "./domain/PendingTransfer";
 import { RecipientPickerController } from "./recipient/RecipientPickerController";
 import { ComposerAdapter } from "./telegram/ComposerAdapter";
@@ -9,7 +10,9 @@ import { TelegramChatNavigator } from "./telegram/TelegramChatNavigator";
 import { ContextMenuIntegration } from "./telegram/TelegramContextMenuIntegration";
 import { TelegramDomAdapter } from "./telegram/TelegramDomAdapter";
 import { TelegramRecipientSourceAdapter } from "./telegram/TelegramRecipientSourceAdapter";
+import { TelegramSendAdapter } from "./telegram/TelegramSendAdapter";
 import { UploadPreviewAdapter } from "./telegram/UploadPreviewAdapter";
+import { DeliveryProgressPanel } from "./ui/DeliveryProgressPanel";
 import { RecipientPicker } from "./ui/RecipientPicker";
 import { logger } from "./utils/logger";
 
@@ -17,18 +20,29 @@ import { logger } from "./utils/logger";
 function bootstrap(): void {
   const telegramDom = new TelegramDomAdapter(logger);
   const pending = new PendingTransfer();
+  const preview = new UploadPreviewAdapter();
+  const navigator = new TelegramChatNavigator(logger);
   const composer = new ComposerAdapter(
     telegramDom,
     new MediaModeActivator(),
-    new UploadPreviewAdapter(),
+    preview,
+  );
+  const delivery = new DeliveryCoordinator(
+    navigator,
+    composer,
+    new TelegramSendAdapter(),
+    pending,
+    new DeliveryProgressPanel(),
+    logger,
   );
   const recipientController = new RecipientPickerController(
     new TelegramRecipientSourceAdapter(),
-    new TelegramChatNavigator(logger),
+    navigator,
     new RecipientPicker(),
     composer,
     pending,
     logger,
+    delivery,
   );
   const controller = new CleanForwardController(
     telegramDom,

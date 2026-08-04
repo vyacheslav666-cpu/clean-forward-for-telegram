@@ -25,7 +25,7 @@ type ImagePreparationState =
   | "cancelling"
   | "clean";
 
-/** Places supported payloads into the current chat but never presses Send. */
+/** Places supported payloads into the current chat before a separate native Send step. */
 export class ComposerAdapter {
   private imageOperationInProgress = false;
   private ownsOpenPreview = false;
@@ -36,7 +36,7 @@ export class ComposerAdapter {
     private readonly preview: UploadPreviewAdapter,
   ) {}
 
-  /** Attempts to populate the current composer without automatically sending anything. */
+  /** Attempts to populate the current composer without activating a Send control itself. */
   public async insert(
     payload: MessagePayload,
     expectedPeerKey: string,
@@ -46,8 +46,19 @@ export class ComposerAdapter {
     }
 
     return this.dom.insertTextIntoComposer(payload.text, expectedPeerKey)
-      ? { success: true, message: "Готово. Проверьте сообщение и нажмите Send вручную." }
+      ? { success: true, message: "Текст подготовлен и проверен перед Send." }
       : { success: false, message: "Не удалось вставить текст в активный composer." };
+  }
+
+  /** Removes only project-owned prepared content when cancellation happens before Send. */
+  public async cancelPreparedPayload(
+    payload: MessagePayload,
+    expectedPeerKey: string,
+  ): Promise<boolean> {
+    if (payload.kind === "image") {
+      return this.cancelPreparedPreview();
+    }
+    return this.dom.clearPreparedText(payload.text, expectedPeerKey);
   }
 
   /** Safely closes a media preview left open after a recoverable partial failure. */
@@ -102,7 +113,7 @@ export class ComposerAdapter {
 
       return {
         success: true,
-        message: "Картинка подготовлена. Проверьте preview и нажмите Send вручную.",
+        message: "Картинка и подпись подготовлены и проверены перед Send.",
       };
     } catch (error) {
       const integrationError =

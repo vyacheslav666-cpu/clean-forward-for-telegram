@@ -144,7 +144,26 @@ export class TelegramDomAdapter {
       return false;
     }
 
-    return insertTextNatively(context.composer, text, { replaceContents: false });
+    const inserted = insertTextNatively(context.composer, text, { replaceContents: false });
+    return inserted && readTelegramText(context.composer) === text.replace(/\r\n?/g, "\n");
+  }
+
+  /** Removes only the exact text prepared by this project before an unclicked Send. */
+  public clearPreparedText(text: string, expectedPeerKey: string): boolean {
+    const context = findActiveComposerContext();
+    const normalizedText = text.replace(/\r\n?/g, "\n");
+    if (
+      !context ||
+      context.peerId !== expectedPeerKey ||
+      readTelegramText(context.composer) !== normalizedText
+    ) {
+      return false;
+    }
+
+    // Exact-value ownership prevents cancellation from erasing a draft the user changed
+    // after Clean Forward prepared it.
+    const cleared = insertTextNatively(context.composer, "", { replaceContents: true });
+    return cleared && isComposerEmpty(context);
   }
 
   private logMissingComposer(): void {
