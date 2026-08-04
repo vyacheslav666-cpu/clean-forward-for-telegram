@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageExtractor } from "../../src/telegram/MessageExtractor";
+import { PendingTransfer } from "../../src/domain/PendingTransfer";
 import { TelegramDomAdapter } from "../../src/telegram/TelegramDomAdapter";
 import { createLogger } from "../helpers";
 
 function messageFixture(contents: string): HTMLElement {
-  document.body.innerHTML = `<div class="bubble" data-mid="10" data-peer-id="20">${contents}</div>`;
+  document.body.innerHTML = `<div class="bubble" data-mid="fixture-mid" data-peer-id="20">${contents}</div>`;
   return document.querySelector<HTMLElement>(".bubble")!;
 }
 
@@ -20,18 +21,18 @@ describe("MessageExtractor", () => {
   });
 
   it("extracts ordinary text", async () => {
-    const payload = await extractor.extract(messageFixture('<div class="message">Обычный текст</div>'));
-    expect(payload).toEqual({ kind: "text", text: "Обычный текст" });
+    const payload = await extractor.extract(messageFixture('<div class="message">fixture-text</div>'));
+    expect(payload).toEqual({ kind: "text", text: "fixture-text" });
   });
 
   it("preserves line breaks", async () => {
-    const payload = await extractor.extract(messageFixture('<div class="message">Первая<br>Вторая\nТретья</div>'));
-    expect(payload).toEqual({ kind: "text", text: "Первая\nВторая\nТретья" });
+    const payload = await extractor.extract(messageFixture('<div class="message">fixture-line-a<br>fixture-line-b\nfixture-line-c</div>'));
+    expect(payload).toEqual({ kind: "text", text: "fixture-line-a\nfixture-line-b\nfixture-line-c" });
   });
 
   it("reads emoji from img.emoji alt", async () => {
-    const payload = await extractor.extract(messageFixture('<div class="message">Привет <img class="emoji" alt="🙂"></div>'));
-    expect(payload).toEqual({ kind: "text", text: "Привет 🙂" });
+    const payload = await extractor.extract(messageFixture('<div class="message">fixture-emoji <img class="emoji" alt="🙂"></div>'));
+    expect(payload).toEqual({ kind: "text", text: "fixture-emoji 🙂" });
   });
 
   it("extracts a photo without caption", async () => {
@@ -41,18 +42,49 @@ describe("MessageExtractor", () => {
   });
 
   it("extracts a photo with caption", async () => {
-    const payload = await extractor.extract(messageFixture('<img class="media-photo" src="blob:test-photo"><div class="message">Подпись</div>'));
+    const payload = await extractor.extract(messageFixture('<img class="media-photo" src="blob:test-photo"><div class="message">fixture-caption</div>'));
     expect(payload?.kind).toBe("image");
-    expect(payload).toMatchObject({ fileName: "telegram-image.jpg", caption: "Подпись" });
+    expect(payload).toMatchObject({ fileName: "telegram-image.jpg", caption: "fixture-caption" });
   });
 
   it("excludes .time and .clearfix metadata", async () => {
-    const payload = await extractor.extract(messageFixture('<div class="message">Текст<span class="time">12:30</span><span class="clearfix">layout</span></div>'));
-    expect(payload).toEqual({ kind: "text", text: "Текст" });
+    const payload = await extractor.extract(messageFixture('<div class="message">fixture-text<span class="time">12:30</span><span class="clearfix">layout</span></div>'));
+    expect(payload).toEqual({ kind: "text", text: "fixture-text" });
+  });
+
+  it("excludes .time independently", async () => {
+    const payload = await extractor.extract(messageFixture('<div class="message">fixture-text<span class="time">09:00</span></div>'));
+    expect(payload).toEqual({ kind: "text", text: "fixture-text" });
+  });
+
+  it("excludes .clearfix independently", async () => {
+    const payload = await extractor.extract(messageFixture('<div class="message">fixture-text<span class="clearfix">layout</span></div>'));
+    expect(payload).toEqual({ kind: "text", text: "fixture-text" });
+  });
+
+  it("omits an empty photo caption", async () => {
+    const payload = await extractor.extract(messageFixture('<img class="media-photo" src="blob:empty-caption"><div class="message">  </div>'));
+    expect(payload?.kind).toBe("image");
+    expect(payload).not.toHaveProperty("caption");
+  });
+
+  it("loads the exact browser-owned Blob URL", async () => {
+    await extractor.extract(messageFixture('<img class="media-photo" src="blob:exact-url">'));
+    expect(fetch).toHaveBeenCalledWith("blob:exact-url");
+  });
+
+  it("does not destroy an earlier pending payload when image loading fails", async () => {
+    const pending = new PendingTransfer();
+    const previous = { kind: "text", text: "keep me" } as const;
+    pending.select(previous);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("blob unavailable"); }));
+    const payload = await extractor.extract(messageFixture('<img class="media-photo" src="blob:failure">'));
+    expect(payload).toBeNull();
+    expect(pending.peek()).toBe(previous);
   });
 
   it("rejects unsupported attachment types", async () => {
-    const payload = await extractor.extract(messageFixture('<div class="attachment"><audio></audio></div><div class="message">voice</div>'));
+    const payload = await extractor.extract(messageFixture('<div class="attachment"><audio></audio></div><div class="message">unsupported-fixture</div>'));
     expect(payload).toBeNull();
     expect(fetch).not.toHaveBeenCalled();
   });

@@ -73,6 +73,9 @@ Object.defineProperty(window, "cancelAnimationFrame", {
 });
 
 afterEach(() => {
+  vi.clearAllTimers();
   document.body.replaceChildren();
+  delete (window as Window & { ChatInput?: unknown }).ChatInput;
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });

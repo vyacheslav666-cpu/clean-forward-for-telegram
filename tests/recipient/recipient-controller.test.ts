@@ -8,7 +8,7 @@ import type { TelegramChatNavigator } from "../../src/telegram/TelegramChatNavig
 import { RecipientPicker, type RecipientPickerActions } from "../../src/ui/RecipientPicker";
 import { createLogger } from "../helpers";
 
-const recipient: Recipient = { peerKey: "7", title: "Target", supported: true };
+const recipient: Recipient = { peerKey: "7", title: "Fixture recipient", supported: true };
 
 function createController(picker: RecipientPicker, pending: PendingTransfer) {
   const source: RecipientSourceAdapter = {
@@ -29,7 +29,7 @@ function createController(picker: RecipientPicker, pending: PendingTransfer) {
 describe("RecipientPickerController", () => {
   it("clears pending state when Cancel is clicked", async () => {
     const pending = new PendingTransfer();
-    pending.select({ kind: "text", text: "payload" });
+    pending.select({ kind: "text", text: "fixture-payload" });
     const picker = new RecipientPicker();
     const controller = createController(picker, pending);
     await controller.open();
@@ -43,7 +43,7 @@ describe("RecipientPickerController", () => {
 
   it("clears pending state when the close cross is clicked", async () => {
     const pending = new PendingTransfer();
-    pending.select({ kind: "text", text: "payload" });
+    pending.select({ kind: "text", text: "fixture-payload" });
     const picker = new RecipientPicker();
     const controller = createController(picker, pending);
     await controller.open();
@@ -57,7 +57,7 @@ describe("RecipientPickerController", () => {
 
   it("keeps the payload after a recoverable preparation error", async () => {
     const pending = new PendingTransfer();
-    const payload = { kind: "text", text: "retry" } as const;
+    const payload = { kind: "text", text: "fixture-retry" } as const;
     pending.select(payload);
     let actions: RecipientPickerActions | null = null;
     const picker = {
@@ -96,7 +96,7 @@ describe("RecipientPickerController", () => {
 
   it("aborts the active session and drops temporary callbacks on close", async () => {
     const pending = new PendingTransfer();
-    pending.select({ kind: "text", text: "payload" });
+    pending.select({ kind: "text", text: "fixture-payload" });
     let observedSignal: AbortSignal | null = null;
     const source: RecipientSourceAdapter = {
       listLoadedRecipients: vi.fn((signal) => {

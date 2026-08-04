@@ -75,6 +75,23 @@ describe("ContextMenuIntegration", () => {
     expect(oldHandler).not.toHaveBeenCalled();
   });
 
+  it("runs the action from primary pointerdown", () => {
+    const { items } = menuFixture(["Forward"]);
+    const handler = vi.fn();
+    new ContextMenuIntegration(createLogger()).ensureAction(items, handler);
+    items.querySelector<HTMLElement>("[data-clean-forward-context-action]")!
+      .dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it("keeps click as a keyboard activation fallback", () => {
+    const { items } = menuFixture(["Forward"]);
+    const handler = vi.fn();
+    new ContextMenuIntegration(createLogger()).ensureAction(items, handler);
+    items.querySelector<HTMLElement>("[data-clean-forward-context-action]")!.click();
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
   it("clamps the menu vertically inside the viewport", () => {
     const { wrapper, items } = menuFixture(["Forward"]);
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 500 });
@@ -91,5 +108,30 @@ describe("ContextMenuIntegration", () => {
     });
     new ContextMenuIntegration(createLogger()).ensureAction(items, vi.fn());
     expect(wrapper.style.top).toBe("67px");
+  });
+
+  it("does not reposition a menu that closed before the animation frames", () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.mocked(window.requestAnimationFrame).mockImplementation((callback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    const { wrapper, items } = menuFixture(["Forward"]);
+    const measure = vi.spyOn(wrapper, "getBoundingClientRect");
+    new ContextMenuIntegration(createLogger()).ensureAction(items, vi.fn());
+    wrapper.classList.remove("active");
+    callbacks.shift()?.(0);
+    callbacks.shift()?.(16);
+    expect(measure).not.toHaveBeenCalled();
+    expect(wrapper.style.top).toBe("100px");
+  });
+
+  it("does not install temporary document or window listeners", () => {
+    const documentListener = vi.spyOn(document, "addEventListener");
+    const windowListener = vi.spyOn(window, "addEventListener");
+    const { items } = menuFixture(["Forward"]);
+    new ContextMenuIntegration(createLogger()).ensureAction(items, vi.fn());
+    expect(documentListener).not.toHaveBeenCalled();
+    expect(windowListener).not.toHaveBeenCalled();
   });
 });

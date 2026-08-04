@@ -5,6 +5,7 @@ import type { ArmedMediaInput, MediaModeActivator } from "../../src/telegram/Med
 import { TelegramDomAdapter } from "../../src/telegram/TelegramDomAdapter";
 import type { UploadPreviewAdapter as UploadPreviewAdapterType, UploadPreviewSession } from "../../src/telegram/UploadPreviewAdapter";
 import { UploadPreviewAdapter } from "../../src/telegram/UploadPreviewAdapter";
+import { readTelegramText } from "../../src/telegram/readTelegramText";
 import { createLogger, installComposer } from "../helpers";
 
 function imagePayload(caption?: string): ImageMessagePayload {
@@ -57,9 +58,9 @@ describe("ComposerAdapter", () => {
       {} as MediaModeActivator,
       {} as UploadPreviewAdapterType,
     );
-    const result = await adapter.insert({ kind: "text", text: "new text" }, "8");
+    const result = await adapter.insert({ kind: "text", text: "fixture-text" }, "8");
     expect(result.success).toBe(true);
-    expect(composer.textContent).toBe("new text");
+    expect(composer.textContent).toBe("fixture-text");
     expect(sendClick).not.toHaveBeenCalled();
   });
 
@@ -90,6 +91,30 @@ describe("ComposerAdapter", () => {
     );
     expect(change).toHaveBeenCalledOnce();
     expect((change.mock.calls[0]?.[0] as Event).bubbles).toBe(true);
+    expect(input.files?.length).toBe(1);
+    expect(input.files?.item(0)?.name).toBe("photo.png");
+  });
+
+  it("does not dispatch input or beforeinput to the file input", () => {
+    installComposer("8");
+    const input = document.createElement("input");
+    input.type = "file";
+    let assigned: FileList | null = null;
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      get: () => assigned,
+      set: (value: FileList) => { assigned = value; },
+    });
+    const inputEvent = vi.fn();
+    const beforeInput = vi.fn();
+    input.addEventListener("input", inputEvent);
+    input.addEventListener("beforeinput", beforeInput);
+    new UploadPreviewAdapter().selectFile(
+      { fileInput: input, peerId: "8" },
+      new File(["data"], "photo.png", { type: "image/png" }),
+    );
+    expect(inputEvent).not.toHaveBeenCalled();
+    expect(beforeInput).not.toHaveBeenCalled();
   });
 
   it("waits for the complete readiness predicate instead of a fixed delay", async () => {
@@ -137,12 +162,71 @@ describe("ComposerAdapter", () => {
     expect((await waiting).popup).toBe(popup);
   });
 
+  it("uses timeout only as the upper boundary for preview appearance", async () => {
+    vi.useFakeTimers();
+    installComposer("8");
+    let rejected = false;
+    const waiting = new UploadPreviewAdapter().waitUntilReady("8").catch((error: unknown) => {
+      rejected = true;
+      throw error;
+    });
+    const rejection = expect(waiting).rejects.toMatchObject({ code: "preview-timeout" });
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(rejected).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejection;
+  });
+
   it("inserts a caption exactly once", async () => {
     const { adapter, preview } = mockImagePipeline();
-    const result = await adapter.insert(imagePayload("one caption"), "8");
+    const result = await adapter.insert(imagePayload("fixture-caption"), "8");
     expect(result.success).toBe(true);
     expect(preview.insertCaption).toHaveBeenCalledOnce();
-    expect(preview.insertCaption).toHaveBeenCalledWith(expect.any(Object), "one caption");
+    expect(preview.insertCaption).toHaveBeenCalledWith(expect.any(Object), "fixture-caption");
+  });
+
+  it("preserves caption line breaks in one native insertion", async () => {
+    vi.useFakeTimers();
+    installComposer("8");
+    const popup = document.createElement("div");
+    popup.className = "popup-send-photo popup-new-media active";
+    const editor = document.createElement("div");
+    editor.className = "simple-message-input-input";
+    editor.setAttribute("contenteditable", "true");
+    popup.append(editor);
+    document.body.append(popup);
+    const session = { popup, image: document.createElement("img"), captionEditor: editor, peerId: "8" };
+    const insertion = new UploadPreviewAdapter().insertCaption(session, "fixture-line-a\r\nfixture-line-b");
+    await vi.advanceTimersByTimeAsync(16);
+    await insertion;
+    expect(document.execCommand).toHaveBeenCalledOnce();
+    expect(readTelegramText(editor)).toBe("fixture-line-a\nfixture-line-b");
+  });
+
+  it("verifies normalized caption emoji through img[alt]", async () => {
+    vi.useFakeTimers();
+    installComposer("8");
+    const popup = document.createElement("div");
+    popup.className = "popup-send-photo popup-new-media active";
+    const editor = document.createElement("div");
+    editor.className = "simple-message-input-input";
+    editor.setAttribute("contenteditable", "true");
+    popup.append(editor);
+    document.body.append(popup);
+    vi.mocked(document.execCommand).mockImplementationOnce(() => {
+      editor.append("fixture-caption ");
+      const emoji = document.createElement("img");
+      emoji.className = "emoji";
+      emoji.alt = "🙂";
+      editor.append(emoji);
+      return true;
+    });
+    const session = { popup, image: document.createElement("img"), captionEditor: editor, peerId: "8" };
+    const insertion = new UploadPreviewAdapter().insertCaption(session, "fixture-caption 🙂");
+    await vi.advanceTimersByTimeAsync(16);
+    await insertion;
+    expect(readTelegramText(editor)).toBe("fixture-caption 🙂");
+    expect(editor.querySelector("img.emoji")?.getAttribute("alt")).toBe("🙂");
   });
 
   it("safely cancels an active preview after a readiness error", async () => {
@@ -154,6 +238,65 @@ describe("ComposerAdapter", () => {
     const result = await adapter.insert(imagePayload(), "8");
     expect(result.success).toBe(false);
     expect(preview.cancelActivePreview).toHaveBeenCalledOnce();
+  });
+
+  it("uses only the scoped preview close control during cleanup", async () => {
+    const unrelatedClose = document.createElement("button");
+    unrelatedClose.className = "popup-close";
+    const unrelatedClick = vi.spyOn(unrelatedClose, "click");
+    document.body.append(unrelatedClose);
+    const popup = document.createElement("div");
+    popup.className = "popup-send-photo popup-new-media active";
+    const scopedClose = document.createElement("button");
+    scopedClose.className = "popup-close";
+    const scopedClick = vi.spyOn(scopedClose, "click");
+    scopedClose.addEventListener("click", () => popup.remove());
+    popup.append(scopedClose);
+    document.body.append(popup);
+    expect(await new UploadPreviewAdapter().cancelActivePreview()).toBe(true);
+    expect(scopedClick).toHaveBeenCalledOnce();
+    expect(unrelatedClick).not.toHaveBeenCalled();
+  });
+
+  it("preserves a ready preview when the caption editor is unavailable", async () => {
+    vi.useFakeTimers();
+    installComposer("8");
+    const popup = document.createElement("div");
+    popup.className = "popup-send-photo popup-new-media active";
+    const item = document.createElement("div");
+    item.className = "popup-item popup-item-media";
+    const image = document.createElement("img");
+    image.src = "blob:no-caption";
+    Object.defineProperties(image, {
+      complete: { configurable: true, value: true },
+      naturalWidth: { configurable: true, value: 100 },
+      naturalHeight: { configurable: true, value: 100 },
+    });
+    const confirm = document.createElement("button");
+    confirm.className = "simple-message-input-confirm";
+    item.append(image);
+    popup.append(item, confirm);
+    document.body.append(popup);
+    const waiting = new UploadPreviewAdapter().waitUntilReady("8");
+    const rejection = expect(waiting).rejects.toEqual(
+      expect.objectContaining({
+        code: "caption-unavailable",
+        preservePreview: true,
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    await rejection;
+    expect(popup.isConnected).toBe(true);
+  });
+
+  it("refuses image preparation when the peer changes", async () => {
+    const { adapter, preview } = mockImagePipeline({
+      arm: async () => ({ fileInput: document.createElement("input"), peerId: "9" }),
+    });
+    const result = await adapter.insert(imagePayload(), "8");
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("другой чат");
+    expect(preview.selectFile).not.toHaveBeenCalled();
   });
 
   it("blocks a second image insertion while the first operation is active", async () => {
