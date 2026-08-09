@@ -106,7 +106,8 @@ export class TelegramSendAdapter {
     if (!context || context.peerId !== expectedPeerKey) {
       return { status: "failed", message: "Composer не принадлежит выбранному получателю." };
     }
-    if (context.container.querySelector(REPLY_OR_FORWARD_DRAFT_SELECTOR)) {
+    const draft = context.container.querySelector<HTMLElement>(REPLY_OR_FORWARD_DRAFT_SELECTOR);
+    if (draft && this.isVisible(draft)) {
       return { status: "failed", message: "Перед Send неожиданно появился reply или forward draft." };
     }
     if (readTelegramText(context.composer) !== normalizeText(payload.text)) {
@@ -246,6 +247,17 @@ export class TelegramSendAdapter {
 
   private isEnabled(button: HTMLButtonElement): boolean {
     return !button.disabled && !button.hidden && button.getAttribute("aria-disabled") !== "true";
+  }
+
+  private isVisible(element: HTMLElement): boolean {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== "none" &&
+      style.visibility !== "hidden"
+    );
   }
 
   private readActiveWait(): OutgoingWait | null {

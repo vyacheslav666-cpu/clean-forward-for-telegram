@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TelegramDomAdapter } from "../../src/telegram/TelegramDomAdapter";
 import { createLogger, installComposer } from "../helpers";
 
@@ -21,6 +21,24 @@ describe("composer draft transaction", () => {
     expect(composer.textContent).toBe("");
     expect((await started.transaction.restore()).success).toBe(true);
     expect(composer.textContent).toBe("user draft");
+  });
+
+  it("clears a real contenteditable selection with delete instead of empty insertText", () => {
+    const composer = installComposer("8", "user draft");
+    vi.mocked(document.execCommand).mockImplementationOnce((command) => {
+      expect(command).toBe("delete");
+      expect(window.getSelection()?.isCollapsed).toBe(false);
+      composer.replaceChildren();
+      composer.dispatchEvent(
+        new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }),
+      );
+      return true;
+    });
+
+    const started = new TelegramDomAdapter(createLogger()).beginDraftTransaction("8");
+
+    expect(started.success).toBe(true);
+    expect(composer.textContent).toBe("");
   });
 
   it("preserves multiline draft line breaks", async () => {

@@ -51,11 +51,17 @@ Object.defineProperty(globalThis, "MouseEvent", {
 Object.defineProperty(document, "execCommand", {
   configurable: true,
   writable: true,
-  value: vi.fn((_command: string, _showUi: boolean, value: string) => {
+  value: vi.fn((command: string, _showUi: boolean, value: string) => {
     const editor = document.activeElement;
     if (editor instanceof HTMLElement) {
-      editor.textContent = value;
-      editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: value }));
+      editor.textContent = command === "delete" ? "" : value;
+      editor.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          data: command === "delete" ? null : value,
+          inputType: command === "delete" ? "deleteContentBackward" : "insertText",
+        }),
+      );
     }
     return true;
   }),

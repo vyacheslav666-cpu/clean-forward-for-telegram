@@ -21,11 +21,14 @@ export function insertTextNatively(
 
   const range = document.createRange();
   range.selectNodeContents(editor);
-  range.collapse(!options.replaceContents);
+  if (!options.replaceContents) {
+    range.collapse(false);
+  }
   selection.removeAllRanges();
   selection.addRange(range);
 
   // A non-collapsed range lets one insertText operation replace the old value while preserving
   // Telegram's coherent beforeinput → DOM change → input sequence.
-  return document.execCommand("insertText", false, text);
+  const command = options.replaceContents && text.length === 0 ? "delete" : "insertText";
+  return document.execCommand(command, false, text);
 }

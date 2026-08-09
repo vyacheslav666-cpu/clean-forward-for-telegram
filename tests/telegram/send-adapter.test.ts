@@ -173,6 +173,34 @@ describe("TelegramSendAdapter", () => {
     expect(click).not.toHaveBeenCalled();
   });
 
+  it("ignores Telegram's collapsed dormant reply wrapper before Send", async () => {
+    const { composer, button } = installTextSend("8", "fixture-text");
+    const draft = document.createElement("div");
+    draft.className = "reply-wrapper";
+    draft.getBoundingClientRect = () => ({
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 696,
+      bottom: 0,
+      left: 0,
+      width: 696,
+      height: 0,
+      toJSON: () => ({}),
+    });
+    composer.parentElement!.append(draft);
+    button.addEventListener("click", () => appendOutgoing("8", "new-mid"));
+
+    const result = await new TelegramSendAdapter().sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    );
+
+    expect(result).toEqual({ status: "sent", messageId: "new-mid" });
+  });
+
   it("fails before Send when the selected peer becomes non-writable", async () => {
     const { composer, button } = installTextSend("8", "fixture-text");
     composer.setAttribute("contenteditable", "false");
