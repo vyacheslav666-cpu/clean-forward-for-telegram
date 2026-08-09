@@ -23,6 +23,7 @@ interface HarnessOptions {
     signal: AbortSignal,
     onSendClicked: () => void,
   ) => Promise<TelegramSendResult>;
+  readonly restoreDraft?: () => Promise<{ success: boolean; message: string }>;
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -35,6 +36,15 @@ function createHarness(options: HarnessOptions = {}) {
     cancel: vi.fn(),
   } as unknown as TelegramChatNavigator;
   const composer = {
+    beginDraftTransaction: vi.fn(() => ({
+      success: true as const,
+      message: "snapshotted",
+      transaction: {
+        peerKey: "101",
+        hadDraft: true,
+        restore: vi.fn(options.restoreDraft ?? (async () => ({ success: true, message: "restored" }))),
+      },
+    })),
     insert: vi.fn(options.insert ?? (async () => ({ success: true, message: "prepared" }))),
     cancelPreparedPayload: vi.fn(async () => true),
   } as unknown as ComposerAdapter;
@@ -80,6 +90,60 @@ describe("DeliveryCoordinator", () => {
     expect(harness.sender.sendPrepared).toHaveBeenCalledOnce();
     expect(result.sentCount).toBe(1);
     expect(harness.pending.peek()).toBeNull();
+  });
+
+  it("restores the draft after a successful send", async () => {
+    const order: string[] = [];
+    const harness = createHarness({
+      send: async (_payload, peerKey, _signal, onSendClicked) => {
+        order.push("send");
+        onSendClicked();
+        return { status: "sent", messageId: `mid-${peerKey}` };
+      },
+      restoreDraft: async () => {
+        order.push("restore");
+        return { success: true, message: "restored" };
+      },
+    });
+    await startBatch(harness);
+    expect(order).toEqual(["send", "restore"]);
+  });
+
+  it("restores the draft after a safe failed send", async () => {
+    const restoreDraft = vi.fn(async () => ({ success: true, message: "restored" }));
+    const harness = createHarness({
+      send: async () => ({ status: "failed", message: "send unavailable" }),
+      restoreDraft,
+    });
+    await startBatch(harness);
+    expect(restoreDraft).toHaveBeenCalledOnce();
+  });
+
+  it("restores the draft after cancellation during preparation", async () => {
+    let releaseInsert: ((result: { success: boolean; message: string }) => void) | null = null;
+    const restoreDraft = vi.fn(async () => ({ success: true, message: "restored" }));
+    const harness = createHarness({
+      insert: () => new Promise((resolve) => { releaseInsert = resolve; }),
+      restoreDraft,
+    });
+    const run = harness.coordinator.start([first])!;
+    await vi.waitFor(() => expect(harness.composer.insert).toHaveBeenCalledOnce());
+    harness.coordinator.requestCancel();
+    releaseInsert!({ success: true, message: "prepared" });
+    await run;
+    expect(restoreDraft).toHaveBeenCalledOnce();
+    expect(harness.sender.sendPrepared).not.toHaveBeenCalled();
+  });
+
+  it("restores the draft after an exception", async () => {
+    const restoreDraft = vi.fn(async () => ({ success: true, message: "restored" }));
+    const harness = createHarness({
+      insert: async () => { throw new Error("fixture exception"); },
+      restoreDraft,
+    });
+    await startBatch(harness);
+    expect(restoreDraft).toHaveBeenCalledOnce();
+    expect(harness.composer.cancelPreparedPayload).toHaveBeenCalledOnce();
   });
 
   it("sends two text recipients sequentially", async () => {

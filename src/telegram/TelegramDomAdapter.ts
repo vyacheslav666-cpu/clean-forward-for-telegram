@@ -1,5 +1,9 @@
 /** Isolates every Telegram Web K DOM assumption behind a narrow adapter. */
 import type { Logger } from "../utils/logger";
+import type {
+  ComposerDraftTransaction,
+  ComposerDraftTransactionStart,
+} from "./ComposerDraftTransaction";
 import { findActiveComposerContext, isComposerEmpty } from "./TelegramComposerDom";
 import { insertTextNatively } from "./nativeTextEditing";
 import { readTelegramText } from "./readTelegramText";
@@ -14,6 +18,8 @@ const ACTIVE_MESSAGE_MENU_SELECTOR =
   ".btn-menu.contextmenu.active.has-items-wrapper .btn-menu-items";
 const ACTIVE_MESSAGE_MENU_WRAPPER_SELECTOR = ".btn-menu.contextmenu.active.has-items-wrapper";
 const MENU_OVERLAY_SELECTOR = ".btn-menu-overlay";
+const ACTIVE_MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
+const REPLY_EDIT_OR_FORWARD_SELECTOR = ".reply-wrapper";
 
 /** DOM snapshot needed by the extractor without leaking Telegram selectors into other layers. */
 export interface TelegramMessageSnapshot {
@@ -134,6 +140,49 @@ export class TelegramDomAdapter {
     };
   }
 
+  /** Snapshots and clears only a plain-text draft owned by the expected peer. */
+  public beginDraftTransaction(expectedPeerKey: string): ComposerDraftTransactionStart {
+    const context = findActiveComposerContext();
+    if (!context || context.peerId !== expectedPeerKey) {
+      return { success: false, message: "Активный composer не принадлежит ожидаемому чату." };
+    }
+    if (document.querySelector(ACTIVE_MEDIA_PREVIEW_SELECTOR)) {
+      return {
+        success: false,
+        message: "Открытый attachment/caption preview нельзя безопасно сохранить и восстановить.",
+      };
+    }
+    const helper = context.container.querySelector<HTMLElement>(REPLY_EDIT_OR_FORWARD_SELECTOR);
+    if (helper && this.isVisible(helper)) {
+      return {
+        success: false,
+        message: "Reply, forward или edit state нельзя безопасно сохранить и восстановить.",
+      };
+    }
+    if (!this.isPlainTextDraft(context.composer)) {
+      return {
+        success: false,
+        message: "Форматированный draft с entities нельзя безопасно сохранить и восстановить.",
+      };
+    }
+
+    const text = readTelegramText(context.composer);
+    const transaction = this.createDraftTransaction(expectedPeerKey, text);
+    if (text.length === 0) {
+      return { success: true, message: "Composer уже пуст.", transaction };
+    }
+
+    const cleared = insertTextNatively(context.composer, "", { replaceContents: true });
+    if (!cleared || readTelegramText(context.composer).length !== 0) {
+      if (findActiveComposerContext()?.peerId === expectedPeerKey) {
+        insertTextNatively(context.composer, text, { replaceContents: true });
+      }
+      return { success: false, message: "Не удалось временно освободить composer без потери draft." };
+    }
+
+    return { success: true, message: "Draft сохранён, composer временно освобождён.", transaction };
+  }
+
   /**
    * Inserts text at the end of Telegram's active composer without dispatching a Send action.
    */
@@ -170,6 +219,59 @@ export class TelegramDomAdapter {
     if (!findActiveComposerContext()) {
       this.log.warn("Активный composer Telegram Web K не найден.");
     }
+  }
+
+  private createDraftTransaction(peerKey: string, text: string): ComposerDraftTransaction {
+    let restored = false;
+    return Object.freeze({
+      peerKey,
+      hadDraft: text.length > 0,
+      restore: async () => {
+        if (restored) {
+          return { success: true, message: "Draft уже восстановлен." };
+        }
+        const context = findActiveComposerContext();
+        if (!context || context.peerId !== peerKey) {
+          return { success: false, message: "Draft не восстановлен: активен другой peer." };
+        }
+        const currentText = readTelegramText(context.composer);
+        if (currentText === text) {
+          restored = true;
+          return { success: true, message: "Draft уже присутствует в composer." };
+        }
+        if (currentText.length !== 0 || !this.isPlainTextDraft(context.composer)) {
+          return {
+            success: false,
+            message: "Draft не восстановлен: composer был изменён после snapshot.",
+          };
+        }
+        if (text.length > 0) {
+          const inserted = insertTextNatively(context.composer, text, { replaceContents: true });
+          if (!inserted || readTelegramText(context.composer) !== text) {
+            return { success: false, message: "Telegram не подтвердил восстановление draft." };
+          }
+        }
+        restored = true;
+        return { success: true, message: "Draft восстановлен." };
+      },
+    });
+  }
+
+  private isPlainTextDraft(composer: HTMLElement): boolean {
+    return Array.from(composer.querySelectorAll("*")).every(
+      (element) => element.tagName === "BR",
+    );
+  }
+
+  private isVisible(element: HTMLElement): boolean {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== "none" &&
+      style.visibility !== "hidden"
+    );
   }
 
   private dismissMessageMenu(menuItems: HTMLElement): boolean {

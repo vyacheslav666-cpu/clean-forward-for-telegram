@@ -32,7 +32,12 @@ describe("TelegramRecipientSourceAdapter", () => {
     return { results };
   }
 
-  function appendSearchRow(container: HTMLElement, peerKey: string, title: string): void {
+  function appendSearchRow(
+    container: HTMLElement,
+    peerKey: string,
+    title: string,
+    subtitle?: string,
+  ): HTMLElement {
     const list = document.createElement("ul");
     list.className = "chatlist";
     const row = document.createElement("a");
@@ -42,8 +47,27 @@ describe("TelegramRecipientSourceAdapter", () => {
     peerTitle.className = "peer-title";
     peerTitle.textContent = title;
     row.append(peerTitle);
+    if (subtitle) {
+      const subtitleNode = document.createElement("span");
+      subtitleNode.className = "row-subtitle";
+      const status = document.createElement("span");
+      status.className = "i18n";
+      status.textContent = subtitle;
+      subtitleNode.append(status);
+      row.append(subtitleNode);
+    }
     list.append(row);
     container.append(list);
+    return row;
+  }
+
+  function installActiveComposer(row: HTMLElement, contenteditable: "true" | "false"): void {
+    row.classList.add("active");
+    const composer = document.createElement("div");
+    composer.className = "input-message-input";
+    composer.dataset.peerId = row.dataset.peerId;
+    composer.setAttribute("contenteditable", contenteditable);
+    document.body.append(composer);
   }
 
   async function readRecipients(): Promise<readonly import("../../src/recipient/Recipient").Recipient[]> {
@@ -68,14 +92,14 @@ describe("TelegramRecipientSourceAdapter", () => {
     expect(result[0]?.title).toBe("Fixture recipient A");
   });
 
-  it("keeps a composite peerId visible but unsupported", async () => {
+  it("omits a composite peerId instead of presenting an ineligible row", async () => {
     vi.useFakeTimers();
     installDialogRow("42_7", "Unsupported fixture");
     const promise = new TelegramRecipientSourceAdapter().listLoadedRecipients(
       new AbortController().signal,
     );
     await vi.runAllTimersAsync();
-    expect(await promise).toMatchObject([{ peerKey: "42_7", supported: false }]);
+    expect(await promise).toEqual([]);
   });
 
   it("extracts only direct real dialog rows", async () => {
@@ -126,10 +150,56 @@ describe("TelegramRecipientSourceAdapter", () => {
     expect((await readRecipients())[0]).not.toHaveProperty("avatarUrl");
   });
 
-  it("preserves a composite peerId without numeric conversion", async () => {
+  it("omits sponsored and forum rows", async () => {
     vi.useFakeTimers();
-    installDialogRow("42_7", "Composite fixture");
-    expect((await readRecipients())[0]?.peerKey).toBe("42_7");
+    const sponsored = installDialogRow("42", "Sponsored fixture");
+    sponsored.dataset.sponsored = "true";
+    const forum = installDialogRow("43", "Forum fixture");
+    forum.append(Object.assign(document.createElement("span"), { className: "is-forum" }));
+    expect(await readRecipients()).toEqual([]);
+  });
+
+  it("omits an explicitly disabled recent row", async () => {
+    vi.useFakeTimers();
+    const disabled = installDialogRow("42", "Unavailable fixture");
+    disabled.setAttribute("aria-disabled", "true");
+    expect(await readRecipients()).toEqual([]);
+  });
+
+  it("omits an active peer whose Telegram composer is read-only", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("-42", "Read-only channel");
+    installActiveComposer(row, "false");
+    expect(await readRecipients()).toEqual([]);
+  });
+
+  it("omits an active peer whose Telegram composer is hidden", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("-42", "Hidden composer channel");
+    installActiveComposer(row, "true");
+    document.querySelector<HTMLElement>('.input-message-input[data-peer-id="-42"]')!.style.display =
+      "none";
+    expect(await readRecipients()).toEqual([]);
+  });
+
+  it("keeps an active admin-postable channel with a writable composer", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("-42", "Writable channel");
+    const subtitle = document.createElement("span");
+    subtitle.className = "row-subtitle";
+    subtitle.innerHTML = '<span class="i18n">811 subscribers</span>';
+    row.append(subtitle);
+    installActiveComposer(row, "true");
+    expect((await readRecipients()).map((recipient) => recipient.peerKey)).toEqual(["-42"]);
+  });
+
+  it("preserves Telegram order while omitting ineligible peers", async () => {
+    vi.useFakeTimers();
+    installDialogRow("10", "Private A");
+    const disabled = installDialogRow("11", "Unavailable");
+    disabled.classList.add("is-disabled");
+    installDialogRow("-12", "Writable group");
+    expect((await readRecipients()).map((recipient) => recipient.peerKey)).toEqual(["10", "-12"]);
   });
 
   it("does not log titles or peerIds", async () => {
@@ -231,5 +301,78 @@ describe("TelegramRecipientSourceAdapter", () => {
     await vi.waitFor(() => expect(updates[updates.length - 1]).toMatchObject([
       { peerKey: "5015040583", title: "Saved Messages", supported: true },
     ]));
+  });
+
+  it("includes private users and groups but omits read-only broadcasts from search", async () => {
+    installNativeSearch((query, results) => {
+      if (query === "mixed") {
+        appendSearchRow(results, "10", "Private user", "last seen recently");
+        appendSearchRow(results, "-11", "Writable group", "62 members");
+        appendSearchRow(results, "-12", "Read-only broadcast", "811 subscribers");
+      }
+    });
+    const updates: Array<readonly import("../../src/recipient/Recipient").Recipient[]> = [];
+    new TelegramRecipientSourceAdapter().searchRecipients(
+      "mixed",
+      new AbortController().signal,
+      (recipients) => updates.push([...recipients]),
+    );
+    await vi.waitFor(() =>
+      expect(updates[updates.length - 1]?.map((item) => item.peerKey)).toEqual(["10", "-11"]),
+    );
+  });
+
+  it("keeps an admin-postable broadcast in search when its active composer is writable", async () => {
+    const recent = installDialogRow("-12", "Admin channel");
+    installActiveComposer(recent, "true");
+    installNativeSearch((query, results) => {
+      if (query === "admin") {
+        appendSearchRow(results, "-12", "Admin channel", "811 subscribers");
+      }
+    });
+    const updates: Array<readonly import("../../src/recipient/Recipient").Recipient[]> = [];
+    new TelegramRecipientSourceAdapter().searchRecipients(
+      "admin",
+      new AbortController().signal,
+      (recipients) => updates.push([...recipients]),
+    );
+    await vi.waitFor(() =>
+      expect(updates[updates.length - 1]?.map((item) => item.peerKey)).toEqual(["-12"]),
+    );
+  });
+
+  it("does not let search reintroduce a peer already observed as read-only", async () => {
+    const recent = installDialogRow("-12", "Read-only broadcast");
+    installActiveComposer(recent, "false");
+    installNativeSearch((query, results) => {
+      if (query === "broadcast") {
+        appendSearchRow(results, "-12", "Read-only broadcast");
+      }
+    });
+    const updates: Array<readonly import("../../src/recipient/Recipient").Recipient[]> = [];
+    const adapter = new TelegramRecipientSourceAdapter();
+    adapter.searchRecipients(
+      "broadcast",
+      new AbortController().signal,
+      (recipients) => updates.push([...recipients]),
+    );
+    await vi.waitFor(() => expect(updates[updates.length - 1]).toEqual([]));
+  });
+
+  it("keeps unknown partial search metadata instead of guessing that it is read-only", async () => {
+    installNativeSearch((query, results) => {
+      if (query === "unknown") {
+        appendSearchRow(results, "-99", "Unknown peer");
+      }
+    });
+    const updates: Array<readonly import("../../src/recipient/Recipient").Recipient[]> = [];
+    new TelegramRecipientSourceAdapter().searchRecipients(
+      "unknown",
+      new AbortController().signal,
+      (recipients) => updates.push([...recipients]),
+    );
+    await vi.waitFor(() =>
+      expect(updates[updates.length - 1]?.map((item) => item.peerKey)).toEqual(["-99"]),
+    );
   });
 });

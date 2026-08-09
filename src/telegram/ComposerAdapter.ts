@@ -3,6 +3,7 @@ import type { MessagePayload } from "../domain/MessagePayload";
 import type { ImageMessagePayload } from "../domain/MessagePayload";
 import { createImageFile } from "./ImageFileFactory";
 import type { MediaModeActivator } from "./MediaModeActivator";
+import type { ComposerDraftTransactionStart } from "./ComposerDraftTransaction";
 import type { TelegramDomAdapter } from "./TelegramDomAdapter";
 import { TelegramIntegrationError } from "./TelegramIntegrationError";
 import type { UploadPreviewAdapter } from "./UploadPreviewAdapter";
@@ -35,6 +36,11 @@ export class ComposerAdapter {
     private readonly mediaMode: MediaModeActivator,
     private readonly preview: UploadPreviewAdapter,
   ) {}
+
+  /** Begins a peer-scoped plain-text draft transaction before payload preparation. */
+  public beginDraftTransaction(expectedPeerKey: string): ComposerDraftTransactionStart {
+    return this.dom.beginDraftTransaction(expectedPeerKey);
+  }
 
   /** Attempts to populate the current composer without activating a Send control itself. */
   public async insert(

@@ -173,6 +173,20 @@ describe("TelegramSendAdapter", () => {
     expect(click).not.toHaveBeenCalled();
   });
 
+  it("fails before Send when the selected peer becomes non-writable", async () => {
+    const { composer, button } = installTextSend("8", "fixture-text");
+    composer.setAttribute("contenteditable", "false");
+    const click = vi.spyOn(button, "click");
+    const result = await new TelegramSendAdapter().sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    );
+    expect(result.status).toBe("failed");
+    expect(click).not.toHaveBeenCalled();
+  });
+
   it("marks the result unknown when the chat changes after Send", async () => {
     const { composer, button } = installTextSend("8", "fixture-text");
     button.addEventListener("click", () => { composer.dataset.peerId = "9"; });

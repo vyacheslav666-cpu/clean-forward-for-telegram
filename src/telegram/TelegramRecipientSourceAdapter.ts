@@ -1,7 +1,7 @@
 /** Extracts recipient snapshots from the verified Telegram Web K dialog list. */
 import type { Recipient } from "../recipient/Recipient";
-import { isSimplePeerKey } from "../recipient/Recipient";
 import type { RecipientSourceAdapter } from "../recipient/RecipientSourceAdapter";
+import { TelegramPeerEligibility, type RecipientSourceKind } from "./TelegramPeerEligibility";
 import { readTelegramText } from "./readTelegramText";
 
 const ACTIVE_DIALOG_LIST_SELECTOR =
@@ -19,18 +19,16 @@ const NATIVE_SEARCH_BACK_SELECTOR =
 const TITLE_SELECTOR = ".peer-title";
 const SUBTITLE_SELECTOR = ".row-subtitle";
 const AVATAR_IMAGE_SELECTOR = ".avatar img";
-const FORUM_MARKER_SELECTOR = ".is-forum";
 const SUBTITLE_IGNORED_SELECTORS = [
   ".badge",
   ".dialog-subtitle-badge",
   ".sending-status",
   ".message-time",
 ] as const;
-const UNSUPPORTED_TOPIC_MESSAGE = "Темы форума пока не поддерживаются";
-const UNSUPPORTED_SPONSORED_MESSAGE = "Рекламная строка не является чатом получателя";
 
 /** Reads recent rows and bridges the project's query into Telegram's native chat search. */
 export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
+  private readonly eligibility = new TelegramPeerEligibility();
   private nativeSearchState: {
     readonly originalValue: string;
     readonly wasActive: boolean;
@@ -45,15 +43,16 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
     }
 
     const recipients = new Map<string, Recipient>();
-    for (const row of list.querySelectorAll<HTMLElement>(DIALOG_ROW_SELECTOR)) {
+    const rows = list.querySelectorAll<HTMLElement>(DIALOG_ROW_SELECTOR);
+    for (const row of rows) {
       this.throwIfAborted(signal);
-      const recipient = this.readRecipient(row);
+      const recipient = this.readRecipient(row, "recent");
       if (recipient && !recipients.has(recipient.peerKey)) {
         recipients.set(recipient.peerKey, recipient);
       }
     }
 
-    if (recipients.size === 0) {
+    if (rows.length === 0) {
       throw new Error("В Telegram нет загруженных строк диалогов.");
     }
 
@@ -155,7 +154,7 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
       if (row.closest(".search-group-recent, .search-group-messages")) {
         continue;
       }
-      const recipient = this.readRecipient(row);
+      const recipient = this.readRecipient(row, "search");
       if (recipient && !recipients.has(recipient.peerKey)) {
         recipients.set(recipient.peerKey, recipient);
       }
@@ -174,11 +173,11 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
     return matches.length === 1 ? matches[0] ?? null : null;
   }
 
-  private readRecipient(row: HTMLElement): Recipient | null {
+  private readRecipient(row: HTMLElement, source: RecipientSourceKind): Recipient | null {
     const peerKey = row.dataset.peerId?.trim() ?? "";
     const titleElement = row.querySelector<HTMLElement>(TITLE_SELECTOR);
     const title = titleElement ? readTelegramText(titleElement).trim() : "";
-    if (!peerKey || !title) {
+    if (!peerKey || !title || !this.eligibility.canSendToPeer(row, source)) {
       return null;
     }
 
@@ -190,22 +189,12 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
       : "";
     const avatar = row.querySelector<HTMLImageElement>(AVATAR_IMAGE_SELECTOR);
     const avatarUrl = avatar?.currentSrc || avatar?.src || "";
-    const isSponsored = row.dataset.sponsored === "true";
-    const isForum = row.querySelector(FORUM_MARKER_SELECTOR) !== null;
-    const supported = isSimplePeerKey(peerKey) && !isSponsored && !isForum;
-    const unsupportedReason = isSponsored
-      ? UNSUPPORTED_SPONSORED_MESSAGE
-      : UNSUPPORTED_TOPIC_MESSAGE;
-
-    // A composite key or forum marker carries routing context. Reducing either to a number
-    // could target the parent chat, so the row remains visible but deliberately disabled.
     return Object.freeze({
       peerKey,
       title,
       ...(subtitle ? { subtitle } : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
-      supported,
-      ...(!supported ? { unsupportedReason } : {}),
+      supported: true,
     });
   }
 

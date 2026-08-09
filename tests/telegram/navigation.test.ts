@@ -77,14 +77,14 @@ describe("TelegramChatNavigator", () => {
     expect(await promise).toMatchObject({ success: false });
   });
 
-  it("does not overwrite a non-empty composer", async () => {
+  it("accepts a non-empty composer without overwriting it", async () => {
     const row = installDialogRow("99");
     row.addEventListener("mousedown", () => installComposer("99", "fixture-draft"));
     const result = await new TelegramChatNavigator(createLogger()).navigate(
       recipient,
       new AbortController().signal,
     );
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
     expect(document.querySelector(".input-message-input")?.textContent).toBe("fixture-draft");
   });
 

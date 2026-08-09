@@ -4,7 +4,6 @@ import { snapshotRecipient } from "../recipient/Recipient";
 import type { Logger } from "../utils/logger";
 import {
   findActiveComposerContext,
-  isComposerEmpty,
   type TelegramComposerContext,
 } from "./TelegramComposerDom";
 
@@ -282,10 +281,6 @@ export class TelegramChatNavigator {
   }
 
   private inspectComposer(context: TelegramComposerContext): string | null {
-    if (!isComposerEmpty(context)) {
-      return "В поле сообщения выбранного чата уже есть текст. Очистите его и повторите попытку.";
-    }
-
     const draft = context.container.querySelector<HTMLElement>(REPLY_OR_FORWARD_DRAFT_SELECTOR);
     if (draft && this.isVisible(draft)) {
       return "В выбранном чате открыт reply или forward draft. Закройте его и повторите попытку.";

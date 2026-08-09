@@ -169,31 +169,48 @@ export class DeliveryCoordinator {
       return false;
     }
 
-    context.batch.beginPreparation(peerKey);
-    this.progress.update(context.batch.snapshot());
-    const prepared = await this.composer.insert(context.payload, peerKey);
-    if (context.batch.isCancelRequested()) {
-      await this.composer.cancelPreparedPayload(context.payload, peerKey);
-      context.batch.returnCurrentToPending();
-      return false;
-    }
-    if (!prepared.success) {
-      await this.composer.cancelPreparedPayload(context.payload, peerKey);
-      context.batch.markFailed(peerKey, prepared.message);
-      this.log.warn("Delivery остановлен до Send: payload не был подготовлен.");
+    const draft = this.composer.beginDraftTransaction(peerKey);
+    if (!draft.success) {
+      context.batch.markFailed(peerKey, draft.message);
+      this.log.warn("Delivery остановлен до Send: draft transaction не запущена.");
       return false;
     }
 
-    const result = await this.sender.sendPrepared(
-      context.payload,
-      peerKey,
-      context.controller.signal,
-      () => {
-        context.batch.markSendClicked(peerKey);
-        this.progress.update(context.batch.snapshot());
-      },
-    );
-    return this.applySendResult(context, recipient, result);
+    try {
+      context.batch.beginPreparation(peerKey);
+      this.progress.update(context.batch.snapshot());
+      const prepared = await this.composer.insert(context.payload, peerKey);
+      if (context.batch.isCancelRequested()) {
+        await this.composer.cancelPreparedPayload(context.payload, peerKey);
+        context.batch.returnCurrentToPending();
+        return false;
+      }
+      if (!prepared.success) {
+        await this.composer.cancelPreparedPayload(context.payload, peerKey);
+        context.batch.markFailed(peerKey, prepared.message);
+        this.log.warn("Delivery остановлен до Send: payload не был подготовлен.");
+        return false;
+      }
+
+      const result = await this.sender.sendPrepared(
+        context.payload,
+        peerKey,
+        context.controller.signal,
+        () => {
+          context.batch.markSendClicked(peerKey);
+          this.progress.update(context.batch.snapshot());
+        },
+      );
+      return this.applySendResult(context, recipient, result);
+    } catch (error) {
+      await this.handleUnexpectedError(context, error);
+      return false;
+    } finally {
+      const restored = await draft.transaction.restore();
+      if (!restored.success) {
+        this.log.error("Не удалось восстановить пользовательский draft.", restored.message);
+      }
+    }
   }
 
   private async applySendResult(
