@@ -26,6 +26,8 @@ describe("automatic recipient-controller wiring", () => {
     } as unknown as RecipientPicker;
     const source: RecipientSourceAdapter = {
       listLoadedRecipients: vi.fn(async () => [first, second]),
+      searchRecipients: vi.fn(),
+      clearSearch: vi.fn(),
     };
     const navigator = {
       navigate: vi.fn(),

@@ -39,6 +39,13 @@ describe("RecipientSelection", () => {
     expect(selection.count()).toBe(0);
   });
 
+  it("keeps identical display names separate when peer identities differ", () => {
+    const selection = new RecipientSelection();
+    selection.toggle({ peerKey: "100", title: "Same name", supported: true });
+    selection.toggle({ peerKey: "200", title: "Same name", supported: true });
+    expect(selection.peerKeys()).toEqual(["100", "200"]);
+  });
+
   it("is independent of filtered presentation lists", () => {
     const selection = new RecipientSelection();
     selection.toggle(recipientA);

@@ -3,6 +3,11 @@
 const OBSERVER_OPTIONS: MutationObserverInit = {
   childList: true,
   subtree: true,
+  attributes: true,
+  // Delivery waits depend on Telegram reusing existing nodes as well as inserting new ones.
+  // Keep the filter narrow: observing every style/title mutation on the whole app would turn
+  // normal Telegram rendering into unnecessary reconciliation work.
+  attributeFilter: ["class", "data-peer-id", "data-mid", "disabled", "aria-disabled"],
 };
 
 /** Handle returned by the shared DOM observation utility. */

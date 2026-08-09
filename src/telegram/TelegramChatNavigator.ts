@@ -1,5 +1,6 @@
 /** Opens one loaded Telegram dialog through its real UI row and verifies the destination. */
 import type { Recipient } from "../recipient/Recipient";
+import { snapshotRecipient } from "../recipient/Recipient";
 import type { Logger } from "../utils/logger";
 import {
   findActiveComposerContext,
@@ -15,7 +16,13 @@ const NATIVE_FORWARD_POPUP_SELECTOR = ".popup.popup-forward.active";
 const MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
 const REPLY_OR_FORWARD_DRAFT_SELECTOR = ".reply-wrapper";
 const SENDING_SELECTOR = ".sending";
-const NAVIGATION_TIMEOUT_MS = 5_000;
+const NAVIGATION_MAX_ATTEMPTS = 3;
+const NAVIGATION_ATTEMPT_TIMEOUT_MS = 800;
+const NAVIGATION_POLL_INTERVAL_MS = 50;
+const REQUIRED_STABLE_POLLS = 2;
+const NAVIGATION_RETRY_BACKOFF_MS = [100, 250] as const;
+const NAVIGATION_TIMEOUT_MESSAGE =
+  "Telegram не открыл выбранный чат вовремя. Попробуйте ещё раз.";
 
 /** Result of opening and validating one Telegram destination chat. */
 export interface ChatNavigationResult {
@@ -23,21 +30,35 @@ export interface ChatNavigationResult {
   readonly message: string;
 }
 
+interface StableComposerCandidate {
+  readonly composer: HTMLElement;
+  readonly container: HTMLElement;
+  readonly revision: number;
+  stablePolls: number;
+}
+
 interface NavigationWait {
-  readonly expectedPeerKey: string;
+  readonly recipient: Readonly<Recipient>;
   readonly resolve: (result: ChatNavigationResult) => void;
   readonly signal: AbortSignal;
-  readonly timeoutId: number;
+  attemptCount: number;
+  attemptActivatedRow: boolean;
+  attemptTimeoutId: number | null;
+  retryTimeoutId: number | null;
+  pollTimeoutId: number | null;
+  candidate: StableComposerCandidate | null;
+  lastTransientBlocker: string | null;
   finish(result: ChatNavigationResult): void;
 }
 
 /** Navigates only through a real loaded dialog row and never invokes Telegram forwarding APIs. */
 export class TelegramChatNavigator {
   private activeWait: NavigationWait | null = null;
+  private domRevision = 0;
 
   public constructor(private readonly log: Logger) {}
 
-  /** Opens the selected row and waits for a clean composer owned by the exact peer key. */
+  /** Opens the selected row and resolves only after the exact peer composer becomes stable. */
   public async navigate(
     recipient: Readonly<Recipient>,
     signal: AbortSignal,
@@ -47,60 +68,42 @@ export class TelegramChatNavigator {
       return { success: false, message: "Переход отменён." };
     }
 
-    const blocker = this.findGlobalBlocker();
-    if (blocker) {
-      return { success: false, message: blocker };
+    const unsupported = this.inspectUnsupportedRow(this.findDialogRow(recipient.peerKey));
+    if (unsupported) {
+      return { success: false, message: unsupported };
     }
 
-    const row = this.findDialogRow(recipient.peerKey);
-    if (!row) {
-      return {
-        success: false,
-        message: "Выбранный чат больше не загружен в списке Telegram. Выберите другой чат.",
-      };
-    }
-
-    if (row.dataset.sponsored === "true" || row.querySelector(FORUM_MARKER_SELECTOR)) {
-      return { success: false, message: "Эта строка Telegram не поддерживается как получатель." };
-    }
-
-    this.log.info("Запрошена безопасная UI-навигация к выбранному чату.");
-    this.activateDialogRow(row);
-    return this.waitForDestination(recipient.peerKey, signal);
+    return this.waitForExpectedPeer(recipient, signal);
   }
 
-  /** Rechecks an active navigation after the application's shared MutationObserver fires. */
-  public notifyDomChanged(): void {
-    this.checkActiveWait();
-  }
-
-  /** Cancels any outstanding destination wait without changing Telegram DOM. */
-  public cancel(): void {
-    this.cancelActiveWait("Переход отменён.");
-  }
-
-  private waitForDestination(
-    expectedPeerKey: string,
+  /**
+   * Repeatedly drives Telegram toward an immutable recipient and confirms a quiet composer state.
+   * A row click is only an attempt; readiness requires exact peer identity and consecutive polls.
+   */
+  public waitForExpectedPeer(
+    recipient: Readonly<Recipient>,
     signal: AbortSignal,
   ): Promise<ChatNavigationResult> {
+    if (signal.aborted) {
+      return Promise.resolve({ success: false, message: "Переход отменён." });
+    }
     return new Promise((resolve) => {
-      const timeoutId = window.setTimeout(() => {
-        this.activeWait?.finish({
-          success: false,
-          message: "Telegram не открыл выбранный чат вовремя. Попробуйте ещё раз.",
-        });
-      }, NAVIGATION_TIMEOUT_MS);
-
       const wait: NavigationWait = {
-        expectedPeerKey,
+        recipient: snapshotRecipient(recipient),
         resolve,
         signal,
-        timeoutId,
+        attemptCount: 0,
+        attemptActivatedRow: false,
+        attemptTimeoutId: null,
+        retryTimeoutId: null,
+        pollTimeoutId: null,
+        candidate: null,
+        lastTransientBlocker: null,
         finish: (result) => {
           if (this.activeWait !== wait) {
             return;
           }
-          window.clearTimeout(timeoutId);
+          this.clearWaitTimers(wait);
           signal.removeEventListener("abort", onAbort);
           this.activeWait = null;
           resolve(result);
@@ -109,24 +112,141 @@ export class TelegramChatNavigator {
       const onAbort = (): void => wait.finish({ success: false, message: "Переход отменён." });
       signal.addEventListener("abort", onAbort, { once: true });
       this.activeWait = wait;
-      this.checkActiveWait();
+      this.beginAttempt(wait);
+      this.schedulePoll(wait);
     });
   }
 
-  private checkActiveWait(): void {
+  /** Rechecks active navigation after the application's shared MutationObserver fires. */
+  public notifyDomChanged(): void {
+    this.domRevision += 1;
     const wait = this.activeWait;
-    if (!wait || wait.signal.aborted) {
+    if (!wait) {
       return;
     }
 
-    const blocker = this.findGlobalBlocker();
-    if (blocker) {
-      wait.finish({ success: false, message: blocker });
+    // Telegram often reuses a row/composer and changes only attributes. Any relevant mutation
+    // invalidates earlier stability evidence, while an arriving row can be activated immediately.
+    wait.candidate = null;
+    this.activateRowIfAvailable(wait);
+    this.checkExpectedPeer(wait, false);
+  }
+
+  /** Cancels any outstanding destination wait without changing Telegram DOM. */
+  public cancel(): void {
+    this.cancelActiveWait("Переход отменён.");
+  }
+
+  private beginAttempt(wait: NavigationWait): void {
+    if (this.activeWait !== wait || wait.signal.aborted) {
+      return;
+    }
+    const terminalBlocker = this.findTerminalBlocker();
+    if (terminalBlocker) {
+      wait.finish({ success: false, message: terminalBlocker });
+      return;
+    }
+
+    wait.attemptCount += 1;
+    wait.attemptActivatedRow = false;
+    wait.candidate = null;
+    this.activateRowIfAvailable(wait);
+    if (this.activeWait !== wait) {
+      return;
+    }
+    this.checkExpectedPeer(wait, false);
+    if (this.activeWait !== wait) {
+      return;
+    }
+    wait.attemptTimeoutId = window.setTimeout(
+      () => this.finishAttempt(wait),
+      NAVIGATION_ATTEMPT_TIMEOUT_MS,
+    );
+  }
+
+  private finishAttempt(wait: NavigationWait): void {
+    if (this.activeWait !== wait) {
+      return;
+    }
+    wait.attemptTimeoutId = null;
+    if (wait.attemptCount >= NAVIGATION_MAX_ATTEMPTS) {
+      wait.finish({
+        success: false,
+        message: wait.lastTransientBlocker ?? NAVIGATION_TIMEOUT_MESSAGE,
+      });
+      return;
+    }
+
+    const backoff = NAVIGATION_RETRY_BACKOFF_MS[wait.attemptCount - 1] ?? 0;
+    this.log.warn("Telegram peer ещё не готов; navigation attempt будет повторён.", {
+      attempt: wait.attemptCount,
+      maxAttempts: NAVIGATION_MAX_ATTEMPTS,
+    });
+    wait.retryTimeoutId = window.setTimeout(() => {
+      wait.retryTimeoutId = null;
+      this.beginAttempt(wait);
+    }, backoff);
+  }
+
+  private activateRowIfAvailable(wait: NavigationWait): void {
+    if (wait.attemptActivatedRow || this.findTransientBlocker()) {
+      return;
+    }
+    const row = this.findDialogRow(wait.recipient.peerKey);
+    const unsupported = this.inspectUnsupportedRow(row);
+    if (unsupported) {
+      wait.finish({ success: false, message: unsupported });
+      return;
+    }
+    if (!row) {
+      return;
+    }
+
+    wait.attemptActivatedRow = true;
+    this.log.info("Запрошена безопасная UI-навигация к выбранному чату.", {
+      attempt: wait.attemptCount,
+      maxAttempts: NAVIGATION_MAX_ATTEMPTS,
+    });
+    this.activateDialogRow(row);
+  }
+
+  private schedulePoll(wait: NavigationWait): void {
+    if (this.activeWait !== wait) {
+      return;
+    }
+    wait.pollTimeoutId = window.setTimeout(() => {
+      wait.pollTimeoutId = null;
+      this.activateRowIfAvailable(wait);
+      this.checkExpectedPeer(wait, true);
+      this.schedulePoll(wait);
+    }, NAVIGATION_POLL_INTERVAL_MS);
+  }
+
+  private checkExpectedPeer(wait: NavigationWait, stablePoll: boolean): void {
+    if (this.activeWait !== wait || wait.signal.aborted) {
+      return;
+    }
+    const terminalBlocker = this.findTerminalBlocker();
+    if (terminalBlocker) {
+      wait.finish({ success: false, message: terminalBlocker });
+      return;
+    }
+    const transientBlocker = this.findTransientBlocker();
+    wait.lastTransientBlocker = transientBlocker;
+    if (transientBlocker) {
+      wait.candidate = null;
       return;
     }
 
     const composer = findActiveComposerContext();
-    if (!composer || composer.peerId !== wait.expectedPeerKey) {
+    if (!composer || composer.peerId !== wait.recipient.peerKey) {
+      // A manual switch to another chat is never accepted. The current attempt continues to
+      // drive the exact snapshotted row, then bounded retries take over if Telegram ignores it.
+      wait.candidate = null;
+      return;
+    }
+    if (!this.isActiveComposerDom(composer)) {
+      wait.candidate = null;
       return;
     }
 
@@ -136,6 +256,28 @@ export class TelegramChatNavigator {
       return;
     }
 
+    const candidate = wait.candidate;
+    const sameCandidate =
+      candidate?.composer === composer.composer &&
+      candidate.container === composer.container &&
+      candidate.revision === this.domRevision;
+    if (!sameCandidate) {
+      wait.candidate = {
+        composer: composer.composer,
+        container: composer.container,
+        revision: this.domRevision,
+        stablePolls: 0,
+      };
+      return;
+    }
+    if (!stablePoll) {
+      return;
+    }
+
+    candidate.stablePolls += 1;
+    if (candidate.stablePolls < REQUIRED_STABLE_POLLS) {
+      return;
+    }
     wait.finish({ success: true, message: "Чат получателя открыт." });
   }
 
@@ -152,15 +294,41 @@ export class TelegramChatNavigator {
     return null;
   }
 
-  private findGlobalBlocker(): string | null {
+  private isActiveComposerDom(context: TelegramComposerContext): boolean {
+    if (!context.composer.isConnected || !context.container.isConnected) {
+      return false;
+    }
+    const hiddenAncestor = context.composer.closest<HTMLElement>('[hidden], [aria-hidden="true"]');
+    const composerStyle = getComputedStyle(context.composer);
+    const containerStyle = getComputedStyle(context.container);
+    return (
+      !hiddenAncestor &&
+      composerStyle.display !== "none" &&
+      composerStyle.visibility !== "hidden" &&
+      containerStyle.display !== "none" &&
+      containerStyle.visibility !== "hidden"
+    );
+  }
+
+  private findTerminalBlocker(): string | null {
     if (document.querySelector(NATIVE_FORWARD_POPUP_SELECTOR)) {
       return "Закройте штатное окно Forward Telegram и повторите попытку.";
     }
     if (document.querySelector(MEDIA_PREVIEW_SELECTOR)) {
       return "Закройте открытое media preview Telegram и повторите попытку.";
     }
-    if (document.querySelector(SENDING_SELECTOR)) {
-      return "Telegram ещё отправляет другое сообщение. Дождитесь завершения и повторите попытку.";
+    return null;
+  }
+
+  private findTransientBlocker(): string | null {
+    return document.querySelector(SENDING_SELECTOR)
+      ? "Telegram ещё отправляет другое сообщение. Дождитесь завершения и повторите попытку."
+      : null;
+  }
+
+  private inspectUnsupportedRow(row: HTMLElement | null): string | null {
+    if (row?.dataset.sponsored === "true" || row?.querySelector(FORUM_MARKER_SELECTOR)) {
+      return "Эта строка Telegram не поддерживается как получатель.";
     }
     return null;
   }
@@ -182,8 +350,7 @@ export class TelegramChatNavigator {
   private activateDialogRow(row: HTMLElement): void {
     const rect = row.getBoundingClientRect();
     // Telegram Web K opens dialog rows from a capture-phase mousedown listener on the
-    // scoped list; its later click handler only cancels anchor navigation. Dispatching the
-    // confirmed event keeps routing inside the real UI path without touching private APIs.
+    // scoped list; retries repeat only this confirmed UI path and never call private APIs.
     row.dispatchEvent(
       new MouseEvent("mousedown", {
         bubbles: true,
@@ -206,6 +373,17 @@ export class TelegramChatNavigator {
       style.display !== "none" &&
       style.visibility !== "hidden"
     );
+  }
+
+  private clearWaitTimers(wait: NavigationWait): void {
+    for (const timeoutId of [wait.attemptTimeoutId, wait.retryTimeoutId, wait.pollTimeoutId]) {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    }
+    wait.attemptTimeoutId = null;
+    wait.retryTimeoutId = null;
+    wait.pollTimeoutId = null;
   }
 
   private cancelActiveWait(message: string): void {

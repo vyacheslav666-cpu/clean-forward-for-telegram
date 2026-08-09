@@ -13,6 +13,8 @@ const recipient: Recipient = { peerKey: "7", title: "Fixture recipient", support
 function createController(picker: RecipientPicker, pending: PendingTransfer) {
   const source: RecipientSourceAdapter = {
     listLoadedRecipients: vi.fn(async () => [recipient]),
+    searchRecipients: vi.fn(),
+    clearSearch: vi.fn(),
   };
   const navigator = {
     navigate: vi.fn(async () => ({ success: true, message: "opened" })),
@@ -66,7 +68,11 @@ describe("RecipientPickerController", () => {
       hide: vi.fn(),
       setBusy: vi.fn(),
     } as unknown as RecipientPicker;
-    const source: RecipientSourceAdapter = { listLoadedRecipients: vi.fn(async () => [recipient]) };
+    const source: RecipientSourceAdapter = {
+      listLoadedRecipients: vi.fn(async () => [recipient]),
+      searchRecipients: vi.fn(),
+      clearSearch: vi.fn(),
+    };
     const navigator = {
       navigate: vi.fn(async () => ({ success: true, message: "opened" })),
       notifyDomChanged: vi.fn(),
@@ -109,6 +115,8 @@ describe("RecipientPickerController", () => {
           );
         });
       }),
+      searchRecipients: vi.fn(),
+      clearSearch: vi.fn(),
     };
     const picker = new RecipientPicker();
     const navigator = {
@@ -130,5 +138,45 @@ describe("RecipientPickerController", () => {
     expect((observedSignal as unknown as AbortSignal).aborted).toBe(true);
     expect(navigator.cancel).toHaveBeenCalled();
     expect(picker.isVisible()).toBe(false);
+  });
+
+  it("clearing search restores recent recipients without losing selection", async () => {
+    const pending = new PendingTransfer();
+    pending.select({ kind: "text", text: "fixture-payload" });
+    const recent: Recipient = { peerKey: "10", title: "Recent", supported: true };
+    const found: Recipient = { peerKey: "20", title: "Found remotely", supported: true };
+    let actions: RecipientPickerActions | null = null;
+    let publishSearch: ((recipients: readonly Recipient[]) => void) | null = null;
+    const picker = {
+      showLoading: vi.fn((value: RecipientPickerActions) => { actions = value; }),
+      show: vi.fn((_items, value: RecipientPickerActions) => { actions = value; }),
+      updateRecipients: vi.fn(),
+      updateSelection: vi.fn(),
+      setSearchLoading: vi.fn(),
+      setError: vi.fn(),
+    } as unknown as RecipientPicker;
+    const source: RecipientSourceAdapter = {
+      listLoadedRecipients: vi.fn(async () => [recent]),
+      searchRecipients: vi.fn((_query, _signal, onUpdate) => { publishSearch = onUpdate; }),
+      clearSearch: vi.fn(),
+    };
+    const controller = new RecipientPickerController(
+      source,
+      { cancel: vi.fn(), notifyDomChanged: vi.fn() } as unknown as TelegramChatNavigator,
+      picker,
+      {} as ComposerAdapter,
+      pending,
+      createLogger(),
+    );
+
+    await controller.open();
+    actions!.onToggle?.(recent);
+    actions!.onSearchQueryChange?.("Found remotely");
+    publishSearch!([found]);
+    expect(picker.updateRecipients).toHaveBeenLastCalledWith([found], ["10"]);
+
+    actions!.onSearchQueryChange?.("");
+    expect(source.clearSearch).toHaveBeenCalled();
+    expect(picker.updateRecipients).toHaveBeenLastCalledWith([recent], ["10"]);
   });
 });

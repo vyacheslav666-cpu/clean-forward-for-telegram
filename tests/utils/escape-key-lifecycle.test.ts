@@ -1,11 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EscapeKeyLifecycle } from "../../src/utils/EscapeKeyLifecycle";
 
-const lifecycles: EscapeKeyLifecycle[] = [];
+const lifecycle = new EscapeKeyLifecycle();
 
 function createLifecycle(): EscapeKeyLifecycle {
-  const lifecycle = new EscapeKeyLifecycle();
-  lifecycles.push(lifecycle);
   return lifecycle;
 }
 
@@ -13,16 +11,22 @@ function escapeEvent(): KeyboardEvent {
   return new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
 }
 
+function pressEscape(target: EventTarget = window): void {
+  target.dispatchEvent(escapeEvent());
+  target.dispatchEvent(
+    new KeyboardEvent("keyup", { key: "Escape", bubbles: true, cancelable: true }),
+  );
+}
+
 afterEach(() => {
-  lifecycles.forEach((lifecycle) => lifecycle.deactivate());
-  lifecycles.length = 0;
+  lifecycle.deactivate();
 });
 
 describe("EscapeKeyLifecycle", () => {
   it("calls cancel exactly once", () => {
     const onEscape = vi.fn();
     createLifecycle().activate({ shouldHandle: () => true, onEscape });
-    window.dispatchEvent(escapeEvent());
+    pressEscape();
     expect(onEscape).toHaveBeenCalledOnce();
   });
 
@@ -42,12 +46,41 @@ describe("EscapeKeyLifecycle", () => {
     expect(laterListener).not.toHaveBeenCalled();
   });
 
-  it("removes the listener after cleanup", () => {
+  it("blocks a Telegram keyup listener registered after construction", () => {
+    const lifecycle = createLifecycle();
+    const telegramBack = vi.fn();
+    let pickerOpen = true;
+    const telegramKeyup = () => telegramBack();
+    window.addEventListener("keyup", telegramKeyup, true);
+    lifecycle.activate({
+      shouldHandle: () => true,
+      onEscape: () => {
+        pickerOpen = false;
+        lifecycle.deactivate();
+      },
+    });
+
+    window.dispatchEvent(escapeEvent());
+    expect(pickerOpen).toBe(true);
+    const keyup = new KeyboardEvent("keyup", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(keyup);
+    window.removeEventListener("keyup", telegramKeyup, true);
+
+    expect(pickerOpen).toBe(false);
+    expect(keyup.defaultPrevented).toBe(true);
+    expect(telegramBack).not.toHaveBeenCalled();
+  });
+
+  it("does not handle Escape after cleanup", () => {
     const lifecycle = createLifecycle();
     const onEscape = vi.fn();
     lifecycle.activate({ shouldHandle: () => true, onEscape });
     lifecycle.deactivate();
-    window.dispatchEvent(escapeEvent());
+    pressEscape();
     expect(onEscape).not.toHaveBeenCalled();
   });
 
@@ -57,12 +90,12 @@ describe("EscapeKeyLifecycle", () => {
     const currentHandler = vi.fn();
     lifecycle.activate({ shouldHandle: () => true, onEscape: oldHandler });
     lifecycle.activate({ shouldHandle: () => true, onEscape: currentHandler });
-    window.dispatchEvent(escapeEvent());
+    pressEscape();
     expect(oldHandler).not.toHaveBeenCalled();
     expect(currentHandler).toHaveBeenCalledOnce();
   });
 
-  it("does not handle Escape after its signal is aborted by deactivate", () => {
+  it("does not handle Escape after deactivate", () => {
     const lifecycle = createLifecycle();
     const onEscape = vi.fn();
     lifecycle.activate({ shouldHandle: () => true, onEscape });
@@ -92,7 +125,7 @@ describe("EscapeKeyLifecycle", () => {
     lifecycle.activate({ shouldHandle: () => true, onEscape: first });
     lifecycle.deactivate();
     lifecycle.activate({ shouldHandle: () => true, onEscape: second });
-    window.dispatchEvent(escapeEvent());
+    pressEscape();
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledOnce();
   });

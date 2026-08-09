@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Recipient } from "../../src/recipient/Recipient";
 import { TelegramChatNavigator } from "../../src/telegram/TelegramChatNavigator";
+import { observeDom } from "../../src/utils/observeDom";
 import { createLogger, installComposer, installDialogRow } from "../helpers";
 
 const recipient: Recipient = { peerKey: "99", title: "Target", supported: true };
@@ -32,6 +33,25 @@ describe("TelegramChatNavigator", () => {
       new AbortController().signal,
     );
     expect(result).toEqual({ success: true, message: "Чат получателя открыт." });
+  });
+
+  it("detects navigation when Telegram reuses a composer and changes only data-peer-id", async () => {
+    const row = installDialogRow("99");
+    const composer = installComposer("100");
+    const navigator = new TelegramChatNavigator(createLogger());
+    const observation = observeDom(document.documentElement, () => navigator.notifyDomChanged());
+    row.addEventListener("mousedown", () => {
+      queueMicrotask(() => { composer.dataset.peerId = "99"; });
+    });
+
+    try {
+      await expect(navigator.navigate(recipient, new AbortController().signal)).resolves.toEqual({
+        success: true,
+        message: "Чат получателя открыт.",
+      });
+    } finally {
+      observation.disconnect();
+    }
   });
 
   it("starts navigation through the confirmed dialog row mousedown", async () => {
@@ -160,5 +180,111 @@ describe("TelegramChatNavigator", () => {
     controller.abort();
     expect(await promise).toEqual({ success: false, message: "Переход отменён." });
     expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
+  it("retries when navigation initially does not settle and the expected peer becomes available later", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    const mousedown = vi.fn(() => {
+      if (mousedown.mock.calls.length === 2) {
+        installComposer("99");
+      }
+    });
+    row.addEventListener("mousedown", mousedown);
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    await expect(navigation).resolves.toEqual({
+      success: true,
+      message: "Чат получателя открыт.",
+    });
+    expect(mousedown).toHaveBeenCalledTimes(2);
+  });
+
+  it("exhausts a bounded number of safe navigation attempts", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    const mousedown = vi.fn();
+    row.addEventListener("mousedown", mousedown);
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await expect(navigation).resolves.toMatchObject({ success: false });
+    expect(mousedown).toHaveBeenCalledTimes(3);
+  });
+
+  it("reasserts the expected peer after the user switches to another chat during navigation", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    const mousedown = vi.fn(() => {
+      document.querySelectorAll(".chat-input-main").forEach((node) => node.remove());
+      installComposer(mousedown.mock.calls.length === 1 ? "100" : "99");
+    });
+    row.addEventListener("mousedown", mousedown);
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    await expect(navigation).resolves.toMatchObject({ success: true });
+    expect(document.querySelector<HTMLElement>(".input-message-input")?.dataset.peerId).toBe("99");
+    expect(mousedown).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires the same expected-peer composer to survive the critical rerender window", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    const navigator = new TelegramChatNavigator(createLogger());
+    let firstComposer: HTMLElement | null = null;
+    row.addEventListener("mousedown", () => {
+      firstComposer = installComposer("99");
+      window.setTimeout(() => {
+        firstComposer?.closest(".chat-input-main")?.remove();
+        installComposer("99");
+        navigator.notifyDomChanged();
+      }, 60);
+    });
+
+    const navigation = navigator.navigate(recipient, new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(500);
+
+    await expect(navigation).resolves.toMatchObject({ success: true });
+    expect((firstComposer as unknown as HTMLElement | null)?.isConnected).toBe(false);
+  });
+
+  it("uses the same peer-readiness contract inside a Chrome PWA-like app shell", async () => {
+    vi.useFakeTimers();
+    const appShell = document.createElement("main");
+    appShell.dataset.fixtureMode = "chrome-pwa";
+    const tab = document.createElement("div");
+    tab.className = "tabs-tab chatlist-parts active";
+    const list = document.createElement("ul");
+    list.className = "chatlist virtual-chatlist";
+    const row = document.createElement("a");
+    row.className = "row chatlist-chat";
+    row.dataset.peerId = "99";
+    list.append(row);
+    tab.append(list);
+    appShell.append(tab);
+    document.body.append(appShell);
+    row.addEventListener("mousedown", () => installComposer("99"));
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(500);
+
+    await expect(navigation).resolves.toMatchObject({ success: true });
   });
 });

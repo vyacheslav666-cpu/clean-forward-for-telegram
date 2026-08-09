@@ -10,6 +10,7 @@ const CANCEL_LABEL = "Отмена";
 const EMPTY_MESSAGE = "Ничего не найдено";
 const LOADING_MESSAGE = "Загружаем чаты…";
 const SELECTED_LABEL = "Выбрано";
+const escapeLifecycle = new EscapeKeyLifecycle();
 
 const PICKER_STYLES = `
   :host {
@@ -164,6 +165,7 @@ const PICKER_STYLES = `
 /** Callbacks emitted by the recipient picker. */
 export interface RecipientPickerActions {
   readonly onToggle?: (recipient: Recipient) => void;
+  readonly onSearchQueryChange?: (query: string) => void;
   readonly onNext: (recipient?: Recipient) => void;
   readonly onCancel: () => void;
 }
@@ -192,10 +194,11 @@ export class RecipientPicker {
   private readonly nextButton: HTMLButtonElement;
   private readonly cancelButton: HTMLButtonElement;
   private readonly closeButton: HTMLButtonElement;
-  private readonly escapeLifecycle = new EscapeKeyLifecycle();
+  private readonly escapeLifecycle = escapeLifecycle;
   private actions: RecipientPickerActions | null = null;
   private rows: RecipientRow[] = [];
   private selectedCount = 0;
+  private remoteResultsActive = false;
   private focusGuardController: AbortController | null = null;
 
   public constructor() {
@@ -231,7 +234,10 @@ export class RecipientPicker {
     this.searchInput.type = "search";
     this.searchInput.placeholder = SEARCH_PLACEHOLDER;
     this.searchInput.autocomplete = "off";
-    this.searchInput.addEventListener("input", () => this.applyFilter());
+    this.searchInput.addEventListener("input", () => {
+      this.applyFilter();
+      this.actions?.onSearchQueryChange?.(this.searchInput.value);
+    });
     searchWrap.append(this.searchInput);
 
     this.status = document.createElement("p");
@@ -294,6 +300,7 @@ export class RecipientPicker {
     this.actions = actions;
     this.searchInput.value = "";
     this.searchInput.disabled = false;
+    this.remoteResultsActive = false;
     this.renderRows(recipients);
     this.updateSelection(options.selectedPeerKeys ?? []);
     this.setError(options.errorMessage ?? "");
@@ -312,6 +319,7 @@ export class RecipientPicker {
     this.host.hidden = true;
     this.actions = null;
     this.selectedCount = 0;
+    this.remoteResultsActive = false;
     this.rows = [];
     this.list.replaceChildren(this.empty);
     this.updateSelectionCount();
@@ -325,7 +333,7 @@ export class RecipientPicker {
 
   /** Disables controls while the confirmed selection is being processed. */
   public setBusy(busy: boolean): void {
-    this.searchInput.disabled = busy || this.rows.length === 0;
+    this.searchInput.disabled = busy;
     this.cancelButton.disabled = busy;
     this.closeButton.disabled = busy;
     for (const row of this.rows) {
@@ -338,17 +346,32 @@ export class RecipientPicker {
   /** Applies externally owned selected peer keys without disturbing the current search query. */
   public updateSelection(selectedPeerKeys: readonly string[]): void {
     const selected = new Set(selectedPeerKeys);
-    this.selectedCount = 0;
+    this.selectedCount = selected.size;
     for (const row of this.rows) {
       const rowSelected = row.recipient.supported && selected.has(row.recipient.peerKey);
       row.button.setAttribute("aria-pressed", String(rowSelected));
       row.button.setAttribute("aria-selected", String(rowSelected));
-      if (rowSelected) {
-        this.selectedCount += 1;
-      }
     }
     this.updateSelectionCount();
     this.nextButton.disabled = this.selectedCount === 0;
+  }
+
+  /** Replaces the current recent/search snapshot without resetting query or selection. */
+  public updateRecipients(
+    recipients: readonly Recipient[],
+    selectedPeerKeys: readonly string[],
+  ): void {
+    this.remoteResultsActive = this.searchInput.value.trim().length > 0;
+    this.renderRows(recipients);
+    this.updateSelection(selectedPeerKeys);
+  }
+
+  /** Shows an asynchronous search placeholder while keeping the query editable. */
+  public setSearchLoading(): void {
+    this.rows = [];
+    this.list.replaceChildren(this.empty);
+    this.empty.textContent = LOADING_MESSAGE;
+    this.empty.hidden = false;
   }
 
   /** Shows or clears a recoverable picker error. */
@@ -409,7 +432,7 @@ export class RecipientPicker {
   }
 
   private applyFilter(): void {
-    const query = this.normalizeSearchText(this.searchInput.value);
+    const query = this.remoteResultsActive ? "" : this.normalizeSearchText(this.searchInput.value);
     let visibleCount = 0;
     for (const row of this.rows) {
       const visible = query.length === 0 || row.searchText.includes(query);

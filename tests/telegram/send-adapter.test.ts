@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ImageMessagePayload } from "../../src/domain/MessagePayload";
 import { TelegramSendAdapter } from "../../src/telegram/TelegramSendAdapter";
+import { observeDom } from "../../src/utils/observeDom";
 import { installComposer } from "../helpers";
 
 function appendOutgoing(peerKey: string, messageId: string, pending = false): HTMLElement {
@@ -106,6 +107,57 @@ describe("TelegramSendAdapter", () => {
     (bubble as unknown as HTMLElement).classList.remove("sending");
     adapter.notifyDomChanged();
     expect(await sending).toEqual({ status: "sent", messageId: "new-mid" });
+  });
+
+  it("confirms delivery when Telegram removes only the sending class", async () => {
+    const { button } = installTextSend("8", "fixture-text");
+    const adapter = new TelegramSendAdapter();
+    const observation = observeDom(document.documentElement, () => adapter.notifyDomChanged());
+    let bubble: HTMLElement | null = null;
+    button.addEventListener("click", () => { bubble = appendOutgoing("8", "new-mid", true); });
+
+    try {
+      const sending = adapter.sendPrepared(
+        { kind: "text", text: "fixture-text" },
+        "8",
+        new AbortController().signal,
+        vi.fn(),
+      );
+      await Promise.resolve();
+      adapter.notifyDomChanged();
+      (bubble as unknown as HTMLElement).classList.remove("sending");
+      await expect(sending).resolves.toEqual({ status: "sent", messageId: "new-mid" });
+    } finally {
+      observation.disconnect();
+    }
+  });
+
+  it("confirms delivery when data-mid is assigned to an existing outgoing node", async () => {
+    const { button } = installTextSend("8", "fixture-text");
+    const adapter = new TelegramSendAdapter();
+    const observation = observeDom(document.documentElement, () => adapter.notifyDomChanged());
+    let bubble: HTMLElement | null = null;
+    button.addEventListener("click", () => {
+      bubble = document.createElement("div");
+      bubble.className = "bubble is-out";
+      bubble.dataset.peerId = "8";
+      document.body.append(bubble);
+    });
+
+    try {
+      const sending = adapter.sendPrepared(
+        { kind: "text", text: "fixture-text" },
+        "8",
+        new AbortController().signal,
+        vi.fn(),
+      );
+      await Promise.resolve();
+      adapter.notifyDomChanged();
+      (bubble as unknown as HTMLElement).dataset.mid = "late-mid";
+      await expect(sending).resolves.toEqual({ status: "sent", messageId: "late-mid" });
+    } finally {
+      observation.disconnect();
+    }
   });
 
   it("fails before Send when prepared text changed", async () => {

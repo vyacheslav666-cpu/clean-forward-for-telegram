@@ -31,6 +31,8 @@ function createFlow(options: {
   } as unknown as RecipientPicker;
   const source: RecipientSourceAdapter = {
     listLoadedRecipients: vi.fn(async () => [first, second]),
+    searchRecipients: vi.fn(),
+    clearSearch: vi.fn(),
   };
   const navigator = {
     navigate: vi.fn(options.navigate ?? (async () => ({ success: true, message: "opened" }))),
@@ -99,7 +101,11 @@ describe("recipient flow integration through adapter boundaries", () => {
     const pending = new PendingTransfer();
     pending.select({ kind: "text", text: "fixture-escape" });
     const picker = new RecipientPicker();
-    const source: RecipientSourceAdapter = { listLoadedRecipients: vi.fn(async () => [first]) };
+    const source: RecipientSourceAdapter = {
+      listLoadedRecipients: vi.fn(async () => [first]),
+      searchRecipients: vi.fn(),
+      clearSearch: vi.fn(),
+    };
     const navigator = { cancel: vi.fn(), notifyDomChanged: vi.fn() } as unknown as TelegramChatNavigator;
     const controller = new RecipientPickerController(
       source,
@@ -113,6 +119,7 @@ describe("recipient flow integration through adapter boundaries", () => {
     document.querySelector<HTMLElement>("[data-clean-forward-recipient-picker]")!
       .shadowRoot!.querySelector<HTMLInputElement>(".search")!.focus();
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", cancelable: true }));
     expect(pending.peek()).toBeNull();
     expect(picker.isVisible()).toBe(false);
   });

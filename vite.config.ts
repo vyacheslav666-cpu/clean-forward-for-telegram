@@ -10,7 +10,7 @@ const TAMPERMONKEY_HEADER = `// ==UserScript==
 // @description  Sends copied Telegram messages as new messages to selected chats.
 // @match        https://web.telegram.org/k/*
 // @grant        none
-// @run-at       document-idle
+// @run-at       document-start
 // ==/UserScript==`;
 
 /**

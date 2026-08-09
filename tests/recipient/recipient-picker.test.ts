@@ -191,6 +191,7 @@ describe("RecipientPicker", () => {
     const { shadow, onCancel } = renderPicker();
     shadow.querySelector<HTMLInputElement>(".search")!.focus();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", bubbles: true }));
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
@@ -331,6 +332,27 @@ describe("RecipientPicker", () => {
     expect(rows()[0]?.getAttribute("aria-selected")).toBe("true");
   });
 
+  it("keeps selection actionable when a virtualized rerender removes its row", () => {
+    const { picker, rows, next } = renderPicker();
+    rows()[0]?.click();
+    picker.updateRecipients([recipients[1]!], ["1"]);
+    expect(next.disabled).toBe(false);
+    expect(next.parentElement?.querySelector(".selection-count")?.textContent).toContain("1");
+  });
+
+  it("does not hide a native search result found by metadata outside title and subtitle", () => {
+    const { picker, shadow, rows } = renderPicker();
+    const search = shadow.querySelector<HTMLInputElement>(".search")!;
+    search.value = "remote_username";
+    search.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    picker.updateRecipients(
+      [{ peerKey: "99", title: "Unrelated display name", supported: true }],
+      [],
+    );
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]?.hidden).toBe(false);
+  });
+
   it("clears rendered selection when closed", () => {
     const { picker, rows } = renderPicker();
     rows()[0]?.click();
@@ -378,6 +400,7 @@ describe("RecipientPicker", () => {
     const host = document.querySelector<HTMLElement>("[data-clean-forward-recipient-picker]")!;
     host.shadowRoot!.querySelector<HTMLInputElement>(".search")!.focus();
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", cancelable: true }));
     expect(onCancel).toHaveBeenCalledOnce();
   });
 

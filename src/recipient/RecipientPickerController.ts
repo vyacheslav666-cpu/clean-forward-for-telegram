@@ -15,6 +15,8 @@ const MULTI_RECIPIENT_MESSAGE =
 /** Runs recipient selection while limiting the preparation pipeline to one chosen chat. */
 export class RecipientPickerController {
   private session: AbortController | null = null;
+  private searchSession: AbortController | null = null;
+  private recentRecipients: readonly Recipient[] = [];
   private recipients: readonly Recipient[] = [];
   private readonly selection = new RecipientSelection();
 
@@ -42,6 +44,7 @@ export class RecipientPickerController {
       if (session.signal.aborted || this.session !== session) {
         return;
       }
+      this.recentRecipients = recipients;
       this.recipients = recipients;
       this.picker.show(recipients, actions);
       this.log.info("Собственный recipient picker открыт.", { count: recipients.length });
@@ -84,6 +87,7 @@ export class RecipientPickerController {
   private createActions(session: AbortController): RecipientPickerActions {
     return {
       onToggle: (recipient) => this.toggleRecipient(recipient, session),
+      onSearchQueryChange: (query) => this.search(query, session),
       onNext: (legacyRecipient) => {
         // Keeping the optional argument lets older test doubles compile; production UI always
         // toggles through onToggle, so controller-owned state remains authoritative.
@@ -94,6 +98,56 @@ export class RecipientPickerController {
       },
       onCancel: () => this.cancel(),
     };
+  }
+
+  private search(query: string, session: AbortController): void {
+    if (this.session !== session || session.signal.aborted) {
+      return;
+    }
+
+    this.searchSession?.abort();
+    this.searchSession = null;
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) {
+      this.source.clearSearch();
+      this.recipients = this.recentRecipients;
+      this.picker.updateRecipients(this.recentRecipients, this.selection.peerKeys());
+      return;
+    }
+
+    const searchSession = new AbortController();
+    this.searchSession = searchSession;
+    const abortSearch = (): void => searchSession.abort();
+    session.signal.addEventListener("abort", abortSearch, { once: true });
+    searchSession.signal.addEventListener(
+      "abort",
+      () => session.signal.removeEventListener("abort", abortSearch),
+      { once: true },
+    );
+    this.picker.setError("");
+    this.picker.setSearchLoading();
+    try {
+      this.source.searchRecipients(normalizedQuery, searchSession.signal, (recipients) => {
+        if (
+          this.session !== session ||
+          this.searchSession !== searchSession ||
+          searchSession.signal.aborted
+        ) {
+          return;
+        }
+        this.recipients = recipients;
+        this.picker.updateRecipients(recipients, this.selection.peerKeys());
+      });
+    } catch (error) {
+      searchSession.abort();
+      if (this.searchSession === searchSession) {
+        this.searchSession = null;
+      }
+      const message = error instanceof Error ? error.message : "Не удалось запустить поиск чатов.";
+      this.picker.updateRecipients([], this.selection.peerKeys());
+      this.picker.setError(message);
+      this.log.error("Ошибка native recipient search.", error);
+    }
   }
 
   private toggleRecipient(recipient: Recipient, session: AbortController): void {
@@ -130,6 +184,9 @@ export class RecipientPickerController {
       // immutable recipient and payload snapshots.
       session.abort();
       this.session = null;
+      this.source.clearSearch();
+      this.searchSession = null;
+      this.recentRecipients = [];
       this.recipients = [];
       this.selection.clear();
       return;
@@ -179,6 +236,9 @@ export class RecipientPickerController {
       this.pending.completeInsertion();
       this.selection.clear();
       this.session = null;
+      this.source.clearSearch();
+      this.searchSession = null;
+      this.recentRecipients = [];
       this.recipients = [];
       this.log.info(result.message);
     } catch (error) {
@@ -207,8 +267,12 @@ export class RecipientPickerController {
   }
 
   private abortSession(): void {
+    this.searchSession?.abort();
+    this.searchSession = null;
+    this.source.clearSearch();
     this.session?.abort();
     this.session = null;
+    this.recentRecipients = [];
     this.recipients = [];
     this.pending.restoreAfterFailure();
     this.navigator.cancel();

@@ -6,35 +6,53 @@ export interface EscapeKeyBinding {
   readonly onEscape: () => void;
 }
 
-/** Ensures repeated popup openings never accumulate document keydown listeners. */
+/** Ensures repeated popup openings never accumulate Escape listeners. */
 export class EscapeKeyLifecycle {
-  private controller: AbortController | null = null;
+  private binding: EscapeKeyBinding | null = null;
+  private consumeEscapeKeyup = false;
 
-  /** Replaces any earlier listener with one binding scoped to the current popup opening. */
-  public activate(binding: EscapeKeyBinding): void {
-    this.deactivate();
-    const controller = new AbortController();
-    this.controller = controller;
+  /** Installs the capture listeners before the host page can register its modal handlers. */
+  public constructor() {
     window.addEventListener(
       "keydown",
       (event) => {
-        if (event.key !== "Escape" || !binding.shouldHandle(event)) {
+        const binding = this.binding;
+        if (event.key !== "Escape" || !binding || !binding.shouldHandle(event)) {
           return;
         }
 
-        // Consuming Escape prevents an underlying Telegram layer from reacting after the
-        // project popup has already treated the key as an explicit cancellation.
+        this.consumeEscapeKeyup = true;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      },
+      { capture: true },
+    );
+    window.addEventListener(
+      "keyup",
+      (event) => {
+        const binding = this.binding;
+        if (event.key !== "Escape" || !binding || !this.consumeEscapeKeyup) {
+          return;
+        }
+
+        this.consumeEscapeKeyup = false;
         event.preventDefault();
         event.stopImmediatePropagation();
         binding.onEscape();
       },
-      { capture: true, signal: controller.signal },
+      { capture: true },
     );
+  }
+
+  /** Replaces any earlier listener with one binding scoped to the current popup opening. */
+  public activate(binding: EscapeKeyBinding): void {
+    this.deactivate();
+    this.binding = binding;
   }
 
   /** Removes the current listener and releases its callback references. */
   public deactivate(): void {
-    this.controller?.abort();
-    this.controller = null;
+    this.binding = null;
+    this.consumeEscapeKeyup = false;
   }
 }
