@@ -1,5 +1,6 @@
 /** Opens one loaded Telegram dialog through its real UI row and verifies the destination. */
 import type { Recipient } from "../recipient/Recipient";
+import type { RecipientSourceAdapter } from "../recipient/RecipientSourceAdapter";
 import { snapshotRecipient } from "../recipient/Recipient";
 import type { Logger } from "../utils/logger";
 import {
@@ -10,6 +11,8 @@ import {
 const ACTIVE_DIALOG_LIST_SELECTOR =
   ".tabs-tab.chatlist-parts.active ul.chatlist.virtual-chatlist";
 const DIALOG_ROW_SELECTOR = ":scope > a.row.chatlist-chat[data-peer-id]";
+const SEARCH_DIALOG_ROW_SELECTOR =
+  "#column-left #search-container .search-super-content-chats a.row.chatlist-chat[data-peer-id]";
 const FORUM_MARKER_SELECTOR = ".is-forum";
 const NATIVE_FORWARD_POPUP_SELECTOR = ".popup.popup-forward.active";
 const MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
@@ -47,6 +50,7 @@ interface NavigationWait {
   pollTimeoutId: number | null;
   candidate: StableComposerCandidate | null;
   lastTransientBlocker: string | null;
+  searchController: AbortController | null;
   finish(result: ChatNavigationResult): void;
 }
 
@@ -55,7 +59,10 @@ export class TelegramChatNavigator {
   private activeWait: NavigationWait | null = null;
   private domRevision = 0;
 
-  public constructor(private readonly log: Logger) {}
+  public constructor(
+    private readonly log: Logger,
+    private readonly recipientSource?: RecipientSourceAdapter,
+  ) {}
 
   /** Opens the selected row and resolves only after the exact peer composer becomes stable. */
   public async navigate(
@@ -98,12 +105,16 @@ export class TelegramChatNavigator {
         pollTimeoutId: null,
         candidate: null,
         lastTransientBlocker: null,
+        searchController: null,
         finish: (result) => {
           if (this.activeWait !== wait) {
             return;
           }
           this.clearWaitTimers(wait);
           signal.removeEventListener("abort", onAbort);
+          wait.searchController?.abort();
+          wait.searchController = null;
+          this.recipientSource?.clearSearch();
           this.activeWait = null;
           resolve(result);
         },
@@ -198,6 +209,7 @@ export class TelegramChatNavigator {
       return;
     }
     if (!row) {
+      this.startRecipientSearch(wait);
       return;
     }
 
@@ -330,16 +342,49 @@ export class TelegramChatNavigator {
 
   private findDialogRow(peerKey: string): HTMLElement | null {
     const list = document.querySelector<HTMLElement>(ACTIVE_DIALOG_LIST_SELECTOR);
-    if (!list) {
-      return null;
-    }
-
+    const recent = list
+      ? Array.from(list.querySelectorAll<HTMLElement>(DIALOG_ROW_SELECTOR))
+      : [];
+    const search = Array.from(
+      document.querySelectorAll<HTMLElement>(SEARCH_DIALOG_ROW_SELECTOR),
+    );
     // Iteration avoids interpolating an opaque peer key into CSS and remains exact for signs.
     return (
-      Array.from(list.querySelectorAll<HTMLElement>(DIALOG_ROW_SELECTOR)).find(
+      [...recent, ...search].find(
         (candidate) => candidate.dataset.peerId === peerKey,
       ) ?? null
     );
+  }
+
+  private startRecipientSearch(wait: NavigationWait): void {
+    if (!this.recipientSource || wait.searchController || wait.signal.aborted) {
+      return;
+    }
+    const controller = new AbortController();
+    wait.searchController = controller;
+    const abortSearch = (): void => controller.abort();
+    wait.signal.addEventListener("abort", abortSearch, { once: true });
+    controller.signal.addEventListener(
+      "abort",
+      () => wait.signal.removeEventListener("abort", abortSearch),
+      { once: true },
+    );
+    try {
+      this.recipientSource.searchRecipients(
+        wait.recipient.title,
+        controller.signal,
+        () => {
+          if (this.activeWait !== wait || controller.signal.aborted) {
+            return;
+          }
+          this.activateRowIfAvailable(wait);
+          this.checkExpectedPeer(wait, false);
+        },
+      );
+    } catch (error) {
+      controller.abort();
+      this.log.warn("Telegram native search не удалось запустить для navigation fallback.", error);
+    }
   }
 
   private activateDialogRow(row: HTMLElement): void {

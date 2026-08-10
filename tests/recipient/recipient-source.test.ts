@@ -78,6 +78,17 @@ describe("TelegramRecipientSourceAdapter", () => {
     return promise;
   }
 
+  it("snapshots the active source chat without retaining its DOM row", () => {
+    const row = installDialogRow("42", "Source chat");
+    row.classList.add("active");
+    const adapter = new TelegramRecipientSourceAdapter();
+
+    const source = adapter.getActiveRecipient();
+    row.remove();
+
+    expect(source).toEqual({ peerKey: "42", title: "Source chat", supported: true });
+  });
+
   it("deduplicates rows with the same peerId", async () => {
     vi.useFakeTimers();
     installDialogRow("42", "Fixture recipient A");

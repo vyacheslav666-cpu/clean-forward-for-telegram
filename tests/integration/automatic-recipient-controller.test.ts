@@ -25,6 +25,7 @@ describe("automatic recipient-controller wiring", () => {
       setError: vi.fn(),
     } as unknown as RecipientPicker;
     const source: RecipientSourceAdapter = {
+      getActiveRecipient: vi.fn(() => first),
       listLoadedRecipients: vi.fn(async () => [first, second]),
       searchRecipients: vi.fn(),
       clearSearch: vi.fn(),
@@ -59,10 +60,13 @@ describe("automatic recipient-controller wiring", () => {
     current.onNext();
 
     expect(delivery.start).toHaveBeenCalledOnce();
-    expect(delivery.start).toHaveBeenCalledWith([
-      expect.objectContaining({ peerKey: "202" }),
+    expect(delivery.start).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ peerKey: "202" }),
+        expect.objectContaining({ peerKey: "101" }),
+      ],
       expect.objectContaining({ peerKey: "101" }),
-    ]);
+    );
     expect(picker.hide).toHaveBeenCalled();
     expect(navigator.navigate).not.toHaveBeenCalled();
     expect(composer.insert).not.toHaveBeenCalled();

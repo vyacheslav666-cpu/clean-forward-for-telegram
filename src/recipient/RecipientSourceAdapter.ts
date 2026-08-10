@@ -3,6 +3,9 @@ import type { Recipient } from "./Recipient";
 
 /** Supplies recipient snapshots without exposing Telegram DOM nodes to the UI. */
 export interface RecipientSourceAdapter {
+  /** Snapshots the active source chat before picker search can rerender the sidebar. */
+  getActiveRecipient?(): Readonly<Recipient> | null;
+
   /** Reads and deduplicates the currently rendered recent dialogs. */
   listLoadedRecipients(signal: AbortSignal): Promise<readonly Recipient[]>;
 

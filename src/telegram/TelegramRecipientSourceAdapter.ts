@@ -7,6 +7,8 @@ import { readTelegramText } from "./readTelegramText";
 const ACTIVE_DIALOG_LIST_SELECTOR =
   ".tabs-tab.chatlist-parts.active ul.chatlist.virtual-chatlist";
 const DIALOG_ROW_SELECTOR = ":scope > a.row.chatlist-chat[data-peer-id]";
+const ACTIVE_DIALOG_ROW_SELECTOR =
+  ".tabs-tab.chatlist-parts.active a.row.chatlist-chat.active[data-peer-id]";
 const LEFT_COLUMN_SELECTOR = "#column-left";
 const NATIVE_SEARCH_INPUT_SELECTOR =
   "#column-left .sidebar-header input.input-search-input[type=\"text\"]";
@@ -33,6 +35,22 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
     readonly originalValue: string;
     readonly wasActive: boolean;
   } | null = null;
+
+  /** Captures source identity without retaining a Telegram-owned DOM node. */
+  public getActiveRecipient(): Readonly<Recipient> | null {
+    const rows = document.querySelectorAll<HTMLElement>(ACTIVE_DIALOG_ROW_SELECTOR);
+    if (rows.length !== 1) {
+      return null;
+    }
+    const row = rows.item(0);
+    const peerKey = row.dataset.peerId?.trim() ?? "";
+    const titleElement = row.querySelector<HTMLElement>(TITLE_SELECTOR);
+    const title = titleElement ? readTelegramText(titleElement).trim() : "";
+    if (!peerKey || !title) {
+      return null;
+    }
+    return Object.freeze({ peerKey, title, supported: true });
+  }
 
   /** Returns unique dialog snapshots in their current Telegram order. */
   public async listLoadedRecipients(signal: AbortSignal): Promise<readonly Recipient[]> {

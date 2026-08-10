@@ -216,15 +216,17 @@ describe("TelegramSendAdapter", () => {
   });
 
   it("marks the result unknown when the chat changes after Send", async () => {
+    vi.useFakeTimers();
     const { composer, button } = installTextSend("8", "fixture-text");
     button.addEventListener("click", () => { composer.dataset.peerId = "9"; });
-    const result = await new TelegramSendAdapter().sendPrepared(
+    const sending = new TelegramSendAdapter().sendPrepared(
       { kind: "text", text: "fixture-text" },
       "8",
       new AbortController().signal,
       vi.fn(),
     );
-    expect(result.status).toBe("unknown");
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect((await sending).status).toBe("unknown");
   });
 
   it("returns unknown after Send when no outgoing bubble can be confirmed", async () => {
@@ -237,8 +239,93 @@ describe("TelegramSendAdapter", () => {
       new AbortController().signal,
       vi.fn(),
     );
-    await vi.advanceTimersByTimeAsync(12_000);
+    await vi.advanceTimersByTimeAsync(20_000);
     expect(click).toHaveBeenCalledOnce();
     expect(await sending).toMatchObject({ status: "unknown" });
+  });
+
+  it("reconciles a late outgoing bubble after timeout without a second Send", async () => {
+    vi.useFakeTimers();
+    const { button } = installTextSend("8", "fixture-text");
+    const click = vi.spyOn(button, "click");
+    const sending = new TelegramSendAdapter().sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    );
+
+    await vi.advanceTimersByTimeAsync(12_100);
+    appendOutgoing("8", "late-mid");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(await sending).toEqual({ status: "sent", messageId: "late-mid" });
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("turns a confirmation timeout into reconciliation success", async () => {
+    vi.useFakeTimers();
+    const { button } = installTextSend("8", "fixture-text");
+    const click = vi.spyOn(button, "click");
+    let bubble: HTMLElement | null = null;
+    button.addEventListener("click", () => { bubble = appendOutgoing("8", "pending-mid", true); });
+    const sending = new TelegramSendAdapter().sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    );
+
+    await vi.advanceTimersByTimeAsync(12_100);
+    (bubble as unknown as HTMLElement).classList.remove("sending");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(await sending).toEqual({ status: "sent", messageId: "pending-mid" });
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("keeps reconciliation alive after cancellation once Send was clicked", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const { button } = installTextSend("8", "fixture-text");
+    const click = vi.spyOn(button, "click");
+    const sending = new TelegramSendAdapter().sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      controller.signal,
+      vi.fn(),
+    );
+
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(12_100);
+    appendOutgoing("8", "after-cancel-mid");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(await sending).toEqual({ status: "sent", messageId: "after-cancel-mid" });
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("does not confirm a wrong observable payload for the expected peer", async () => {
+    vi.useFakeTimers();
+    const { button } = installTextSend("8", "fixture-text");
+    const click = vi.spyOn(button, "click");
+    button.addEventListener("click", () => {
+      const bubble = appendOutgoing("8", "unrelated-mid");
+      const message = document.createElement("span");
+      message.className = "message";
+      message.textContent = "different text";
+      bubble.append(message);
+    });
+    const sending = new TelegramSendAdapter().sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    );
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect((await sending).status).toBe("unknown");
+    expect(click).toHaveBeenCalledOnce();
   });
 });

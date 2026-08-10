@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DeliveryCoordinator } from "../../src/delivery/DeliveryCoordinator";
+import type { AppConfig } from "../../src/config";
 import type { DeliveryBatchSnapshot } from "../../src/delivery/DeliveryBatch";
 import type { MessagePayload } from "../../src/domain/MessagePayload";
 import { PendingTransfer } from "../../src/domain/PendingTransfer";
@@ -12,8 +13,10 @@ import { createLogger } from "../helpers";
 
 const first: Recipient = { peerKey: "101", title: "First", supported: true };
 const second: Recipient = { peerKey: "202", title: "Second", supported: true };
+const sourceChat: Recipient = { peerKey: "101", title: "Source", supported: true };
 
 interface HarnessOptions {
+  readonly showDeliveryResultDialog?: boolean;
   readonly payload?: MessagePayload;
   readonly navigate?: (recipient: Readonly<Recipient>, signal: AbortSignal) => Promise<ChatNavigationResult>;
   readonly insert?: (payload: MessagePayload, peerKey: string) => Promise<{ success: boolean; message: string }>;
@@ -61,22 +64,27 @@ function createHarness(options: HarnessOptions = {}) {
     update: vi.fn(),
     hide: vi.fn(),
   } as unknown as DeliveryProgressPanel;
+  const log = createLogger();
+  const config: AppConfig = {
+    debug: { showDeliveryResultDialog: options.showDeliveryResultDialog ?? false },
+  };
   const coordinator = new DeliveryCoordinator(
     navigator,
     composer,
     sender,
     pending,
     progress,
-    createLogger(),
+    log,
+    config,
   );
-  return { coordinator, payload, pending, navigator, composer, sender, progress };
+  return { coordinator, payload, pending, navigator, composer, sender, progress, log };
 }
 
 async function startBatch(
   harness: ReturnType<typeof createHarness>,
   recipients: readonly Recipient[] = [first],
 ): Promise<DeliveryBatchSnapshot> {
-  const run = harness.coordinator.start(recipients);
+  const run = harness.coordinator.start(recipients, sourceChat);
   if (!run) throw new Error("Batch did not start");
   return run;
 }
@@ -90,6 +98,18 @@ describe("DeliveryCoordinator", () => {
     expect(harness.sender.sendPrepared).toHaveBeenCalledOnce();
     expect(result.sentCount).toBe(1);
     expect(harness.pending.peek()).toBeNull();
+    expect(harness.progress.hide).toHaveBeenCalledOnce();
+    expect(harness.coordinator.hasOpenBatch()).toBe(false);
+  });
+
+  it("keeps the detailed final result open when the debug modal flag is enabled", async () => {
+    const harness = createHarness({ showDeliveryResultDialog: true });
+
+    const result = await startBatch(harness);
+
+    expect(result.sentCount).toBe(1);
+    expect(harness.progress.hide).not.toHaveBeenCalled();
+    expect(harness.coordinator.hasOpenBatch()).toBe(true);
   });
 
   it("restores the draft after a successful send", async () => {
@@ -109,14 +129,14 @@ describe("DeliveryCoordinator", () => {
     expect(order).toEqual(["send", "restore"]);
   });
 
-  it("restores the draft after a safe failed send", async () => {
+  it("restores the draft after every safe failed send attempt", async () => {
     const restoreDraft = vi.fn(async () => ({ success: true, message: "restored" }));
     const harness = createHarness({
       send: async () => ({ status: "failed", message: "send unavailable" }),
       restoreDraft,
     });
     await startBatch(harness);
-    expect(restoreDraft).toHaveBeenCalledOnce();
+    expect(restoreDraft).toHaveBeenCalledTimes(3);
   });
 
   it("restores the draft after cancellation during preparation", async () => {
@@ -126,12 +146,25 @@ describe("DeliveryCoordinator", () => {
       insert: () => new Promise((resolve) => { releaseInsert = resolve; }),
       restoreDraft,
     });
-    const run = harness.coordinator.start([first])!;
+    const run = harness.coordinator.start([first], sourceChat)!;
     await vi.waitFor(() => expect(harness.composer.insert).toHaveBeenCalledOnce());
     harness.coordinator.requestCancel();
     releaseInsert!({ success: true, message: "prepared" });
     await run;
     expect(restoreDraft).toHaveBeenCalledOnce();
+    expect(harness.sender.sendPrepared).not.toHaveBeenCalled();
+  });
+
+  it("cancels before the first navigation at the deterministic start boundary", async () => {
+    const harness = createHarness();
+
+    const run = harness.coordinator.start([second], sourceChat)!;
+    harness.coordinator.requestCancel();
+    const result = await run;
+
+    expect(result.cancelRequested).toBe(true);
+    expect(harness.navigator.navigate).not.toHaveBeenCalled();
+    expect(harness.composer.insert).not.toHaveBeenCalled();
     expect(harness.sender.sendPrepared).not.toHaveBeenCalled();
   });
 
@@ -167,6 +200,7 @@ describe("DeliveryCoordinator", () => {
     expect(order).toEqual([
       "navigate:101", "prepare:101", "send:101",
       "navigate:202", "prepare:202", "send:202",
+      "navigate:101",
     ]);
     expect(result.sentCount).toBe(2);
   });
@@ -192,7 +226,7 @@ describe("DeliveryCoordinator", () => {
     const harness = createHarness();
     await startBatch(harness, [second, first]);
     expect(vi.mocked(harness.navigator.navigate).mock.calls.map(([recipient]) => recipient.peerKey))
-      .toEqual(["202", "101"]);
+      .toEqual(["202", "101", "101"]);
   });
 
   it("invokes one Send attempt per recipient", async () => {
@@ -212,22 +246,23 @@ describe("DeliveryCoordinator", () => {
         return Promise.resolve({ status: "sent", messageId: "mid-202" });
       },
     });
-    const run = harness.coordinator.start([first, second])!;
+    const run = harness.coordinator.start([first, second], sourceChat)!;
     await vi.waitFor(() => expect(harness.sender.sendPrepared).toHaveBeenCalledOnce());
     expect(harness.navigator.navigate).toHaveBeenCalledOnce();
     confirmFirst!({ status: "sent", messageId: "mid-101" });
     await run;
-    expect(harness.navigator.navigate).toHaveBeenCalledTimes(2);
+    expect(harness.navigator.navigate).toHaveBeenCalledTimes(3);
   });
 
-  it("stops on a definite failure before Send", async () => {
+  it("retries a true pre-Send failure and continues after terminal exhaustion", async () => {
     const harness = createHarness({
       insert: async () => ({ success: false, message: "preview timeout" }),
     });
     const result = await startBatch(harness, [first, second]);
     expect(harness.sender.sendPrepared).not.toHaveBeenCalled();
-    expect(result.failedCount).toBe(1);
-    expect(harness.navigator.navigate).toHaveBeenCalledOnce();
+    expect(result.failedCount).toBe(2);
+    expect(harness.navigator.navigate).toHaveBeenCalledTimes(7);
+    expect(harness.composer.insert).toHaveBeenCalledTimes(6);
     expect(harness.pending.peek()).toBe(harness.payload);
   });
 
@@ -238,9 +273,11 @@ describe("DeliveryCoordinator", () => {
         return { status: "unknown", message: "no outgoing bubble" };
       },
     });
-    const result = await startBatch(harness, [first, second]);
+    const result = await startBatch(harness, [second, first]);
     expect(result.unknownCount).toBe(1);
-    expect(harness.navigator.navigate).toHaveBeenCalledOnce();
+    expect(harness.navigator.navigate).toHaveBeenCalledTimes(2);
+    expect(harness.navigator.navigate).toHaveBeenLastCalledWith(sourceChat, expect.any(AbortSignal));
+    expect(harness.sender.sendPrepared).toHaveBeenCalledOnce();
     expect(harness.pending.peek()).toBeNull();
   });
 
@@ -252,27 +289,44 @@ describe("DeliveryCoordinator", () => {
         return new Promise((resolve) => { confirmFirst = resolve; });
       },
     });
-    const run = harness.coordinator.start([first, second])!;
+    const run = harness.coordinator.start([second, first], sourceChat)!;
     await vi.waitFor(() => expect(harness.sender.sendPrepared).toHaveBeenCalledOnce());
     harness.coordinator.requestCancel();
-    confirmFirst!({ status: "sent", messageId: "mid-101" });
+    confirmFirst!({ status: "sent", messageId: "mid-202" });
     const result = await run;
     expect(result.sentCount).toBe(1);
     expect(result.recipients[1]?.status).toBe("pending");
-    expect(harness.navigator.navigate).toHaveBeenCalledOnce();
+    expect(harness.navigator.navigate).toHaveBeenCalledTimes(2);
+    expect(harness.navigator.navigate).toHaveBeenLastCalledWith(sourceChat, expect.any(AbortSignal));
   });
 
-  it("fails closed when the active chat changes before Send", async () => {
+  it("restores the source chat after a partial terminal failure", async () => {
+    const harness = createHarness({
+      insert: async (_payload, peerKey) => peerKey === "202"
+        ? { success: false, message: "terminal preparation failure" }
+        : { success: true, message: "prepared" },
+    });
+
+    const result = await startBatch(harness, [first, second]);
+
+    expect(result.sentCount).toBe(1);
+    expect(result.failedCount).toBe(1);
+    expect(harness.sender.sendPrepared).toHaveBeenCalledOnce();
+    expect(harness.navigator.navigate).toHaveBeenLastCalledWith(sourceChat, expect.any(AbortSignal));
+  });
+
+  it("retries navigation mismatch safely without reaching Send", async () => {
     const harness = createHarness({
       navigate: async () => ({ success: false, message: "peer mismatch" }),
     });
     const result = await startBatch(harness, [first, second]);
-    expect(result.failedCount).toBe(1);
+    expect(result.failedCount).toBe(2);
+    expect(harness.navigator.navigate).toHaveBeenCalledTimes(7);
     expect(harness.composer.insert).not.toHaveBeenCalled();
     expect(harness.sender.sendPrepared).not.toHaveBeenCalled();
   });
 
-  it("retries only safe recipients and never duplicates a sent recipient", async () => {
+  it("automatically retries a first pre-Send failure and never duplicates a sent recipient", async () => {
     let secondAttempt = 0;
     const harness = createHarness({
       insert: async (_payload, peerKey) => {
@@ -285,28 +339,116 @@ describe("DeliveryCoordinator", () => {
         return { success: true, message: "prepared" };
       },
     });
-    const firstRun = await startBatch(harness, [first, second]);
-    expect(firstRun.sentCount).toBe(1);
-    expect(firstRun.failedCount).toBe(1);
-    const retry = harness.coordinator.retryFailed();
-    if (!retry) throw new Error("Retry did not start");
-    const retried = await retry;
-    expect(retried.sentCount).toBe(2);
+    const result = await startBatch(harness, [first, second]);
+    expect(result.sentCount).toBe(2);
+    expect(result.failedCount).toBe(0);
     expect(vi.mocked(harness.sender.sendPrepared).mock.calls.filter(([, peerKey]) => peerKey === "101"))
       .toHaveLength(1);
     expect(vi.mocked(harness.sender.sendPrepared).mock.calls.filter(([, peerKey]) => peerKey === "202"))
       .toHaveLength(1);
+    expect(vi.mocked(harness.composer.insert).mock.calls.filter(([, peerKey]) => peerKey === "202"))
+      .toHaveLength(2);
+    expect(result.recipients[1]).toMatchObject({ attemptCount: 2, retryReason: "pre-Send failure" });
+    expect(harness.log.debug).toHaveBeenCalledWith(
+      expect.stringContaining("автоматически повторит"),
+      expect.objectContaining({ attempt: 1, nextAttempt: 2, reason: "preparation" }),
+    );
   });
+
+  it("retries a transient navigation failure and succeeds", async () => {
+    let attempts = 0;
+    const harness = createHarness({
+      navigate: async () => {
+        attempts += 1;
+        return attempts === 1
+          ? { success: false, message: "peer not ready" }
+          : { success: true, message: "opened" };
+      },
+    });
+
+    const result = await startBatch(harness);
+
+    expect(result.sentCount).toBe(1);
+    expect(harness.navigator.navigate).toHaveBeenCalledTimes(2);
+    expect(harness.sender.sendPrepared).toHaveBeenCalledOnce();
+    expect(result.recipients[0]).toMatchObject({ attemptCount: 2, retryReason: "peer not ready" });
+  });
+
+  it("retries an unavailable Send control only when no click occurred", async () => {
+    let attempts = 0;
+    const harness = createHarness({
+      send: async (_payload, peerKey, _signal, onSendClicked) => {
+        attempts += 1;
+        if (attempts === 1) {
+          return { status: "failed", message: "send button unavailable" };
+        }
+        onSendClicked();
+        return { status: "sent", messageId: `mid-${peerKey}` };
+      },
+    });
+
+    const result = await startBatch(harness);
+
+    expect(result.sentCount).toBe(1);
+    expect(harness.sender.sendPrepared).toHaveBeenCalledTimes(2);
+    expect(result.recipients[0]).toMatchObject({
+      attemptCount: 2,
+      retryReason: "send button unavailable",
+      sendClicked: true,
+    });
+  });
+
+  it.each([1, 2, 10, 50, 100])(
+    "delivers %i sequential recipients under delayed DOM without duplicates or wrong peers",
+    async (count) => {
+      const recipients = Array.from({ length: count }, (_, index): Recipient => ({
+        peerKey: `${10_000 + index}`,
+        title: `Recipient ${index}`,
+        supported: true,
+      }));
+      const sentPeers: string[] = [];
+      const harness = createHarness({
+        navigate: async () => {
+          await Promise.resolve();
+          return { success: true, message: "opened" };
+        },
+        insert: async () => {
+          await Promise.resolve();
+          return { success: true, message: "prepared" };
+        },
+        send: async (_payload, peerKey, _signal, onSendClicked) => {
+          await Promise.resolve();
+          onSendClicked();
+          sentPeers.push(peerKey);
+          return { status: "sent", messageId: `mid-${peerKey}` };
+        },
+      });
+
+      const result = await startBatch(harness, recipients);
+
+      expect(result.sentCount).toBe(count);
+      expect(result.failedCount).toBe(0);
+      expect(result.unknownCount).toBe(0);
+      expect(sentPeers).toEqual(recipients.map((recipient) => recipient.peerKey));
+      expect(new Set(sentPeers).size).toBe(count);
+      expect(harness.sender.sendPrepared).toHaveBeenCalledTimes(count);
+      expect(harness.navigator.navigate).toHaveBeenLastCalledWith(
+        sourceChat,
+        expect.any(AbortSignal),
+      );
+    },
+  );
 
   it("does not start two batches from a double Next", async () => {
     let releaseNavigation: ((result: ChatNavigationResult) => void) | null = null;
     const harness = createHarness({
       navigate: () => new Promise((resolve) => { releaseNavigation = resolve; }),
     });
-    const firstRun = harness.coordinator.start([first]);
-    const secondRun = harness.coordinator.start([first]);
+    const firstRun = harness.coordinator.start([first], sourceChat);
+    const secondRun = harness.coordinator.start([first], sourceChat);
     expect(firstRun).not.toBeNull();
     expect(secondRun).toBeNull();
+    await Promise.resolve();
     releaseNavigation!({ success: true, message: "opened" });
     await firstRun;
     expect(harness.navigator.navigate).toHaveBeenCalledOnce();

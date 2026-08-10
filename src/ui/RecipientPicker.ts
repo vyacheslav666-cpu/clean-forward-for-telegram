@@ -3,6 +3,8 @@ import type { Recipient } from "../recipient/Recipient";
 import { EscapeKeyLifecycle } from "../utils/EscapeKeyLifecycle";
 
 const PICKER_HOST_ATTRIBUTE = "data-clean-forward-recipient-picker";
+const PROJECT_OVERLAY_SELECTOR =
+  "[data-clean-forward-recipient-picker], [data-clean-forward-delivery-progress]";
 const PICKER_TITLE = "Отправить как новое";
 const SEARCH_PLACEHOLDER = "Поиск чатов";
 const NEXT_LABEL = "Далее";
@@ -457,7 +459,11 @@ export class RecipientPicker {
 
   private activateEscapeLifecycle(): void {
     this.escapeLifecycle.activate({
-      shouldHandle: () => this.host.isConnected && this.isVisible() && this.ownsCurrentFocus(),
+      shouldHandle: () =>
+        this.host.isConnected &&
+        this.isVisible() &&
+        this.isTopLevelProjectOverlay() &&
+        this.ownsCurrentFocus(),
       onEscape: () => this.cancel(),
     });
   }
@@ -532,6 +538,12 @@ export class RecipientPicker {
       active === document.documentElement ||
       this.host.shadowRoot?.contains(active) === true
     );
+  }
+
+  private isTopLevelProjectOverlay(): boolean {
+    const visible = Array.from(document.querySelectorAll<HTMLElement>(PROJECT_OVERLAY_SELECTOR))
+      .filter((overlay) => overlay.isConnected && !overlay.hidden);
+    return visible[visible.length - 1] === this.host;
   }
 
   private updateSelectionCount(): void {

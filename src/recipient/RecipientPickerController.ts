@@ -18,6 +18,7 @@ export class RecipientPickerController {
   private searchSession: AbortController | null = null;
   private recentRecipients: readonly Recipient[] = [];
   private recipients: readonly Recipient[] = [];
+  private sourceRecipient: Readonly<Recipient> | null = null;
   private readonly selection = new RecipientSelection();
 
   public constructor(
@@ -34,6 +35,7 @@ export class RecipientPickerController {
   public async open(): Promise<void> {
     this.abortSession();
     this.selection.clear();
+    this.sourceRecipient = this.source.getActiveRecipient?.() ?? null;
     const session = new AbortController();
     this.session = session;
     const actions = this.createActions(session);
@@ -170,8 +172,12 @@ export class RecipientPickerController {
     }
 
     if (this.delivery) {
+      if (!this.sourceRecipient) {
+        this.picker.setError("Не удалось надёжно определить исходный чат. Обновите Telegram и повторите попытку.");
+        return;
+      }
       this.picker.hide();
-      const started = this.delivery.start(selectedRecipients);
+      const started = this.delivery.start(selectedRecipients, this.sourceRecipient);
       if (!started) {
         this.picker.show(this.recipients, this.createActions(session), {
           selectedPeerKeys: this.selection.peerKeys(),
@@ -189,6 +195,7 @@ export class RecipientPickerController {
       this.recentRecipients = [];
       this.recipients = [];
       this.selection.clear();
+      this.sourceRecipient = null;
       return;
     }
 
@@ -274,6 +281,7 @@ export class RecipientPickerController {
     this.session = null;
     this.recentRecipients = [];
     this.recipients = [];
+    this.sourceRecipient = null;
     this.pending.restoreAfterFailure();
     this.navigator.cancel();
   }

@@ -21,7 +21,8 @@ function bootstrap(): void {
   const telegramDom = new TelegramDomAdapter(logger);
   const pending = new PendingTransfer();
   const preview = new UploadPreviewAdapter();
-  const navigator = new TelegramChatNavigator(logger);
+  const recipientSource = new TelegramRecipientSourceAdapter();
+  const navigator = new TelegramChatNavigator(logger, recipientSource);
   const composer = new ComposerAdapter(
     telegramDom,
     new MediaModeActivator(),
@@ -30,13 +31,13 @@ function bootstrap(): void {
   const delivery = new DeliveryCoordinator(
     navigator,
     composer,
-    new TelegramSendAdapter(),
+    new TelegramSendAdapter(logger),
     pending,
     new DeliveryProgressPanel(),
     logger,
   );
   const recipientController = new RecipientPickerController(
-    new TelegramRecipientSourceAdapter(),
+    recipientSource,
     navigator,
     new RecipientPicker(),
     composer,

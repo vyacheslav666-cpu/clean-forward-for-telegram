@@ -17,6 +17,8 @@ export interface RecipientDeliverySnapshot {
   readonly recipient: Readonly<Recipient>;
   readonly status: RecipientDeliveryStatus;
   readonly sendClicked: boolean;
+  readonly attemptCount: number;
+  readonly retryReason?: string;
   readonly detail?: string;
   readonly messageId?: string;
 }
@@ -38,6 +40,8 @@ interface MutableRecipientDelivery {
   readonly recipient: Readonly<Recipient>;
   status: RecipientDeliveryStatus;
   sendClicked: boolean;
+  attemptCount: number;
+  retryReason?: string;
   detail?: string;
   messageId?: string;
 }
@@ -54,6 +58,7 @@ export class DeliveryBatch {
       recipient: snapshotRecipient(recipient),
       status: "pending",
       sendClicked: false,
+      attemptCount: 0,
     }));
   }
 
@@ -81,7 +86,9 @@ export class DeliveryBatch {
     const index = this.requireRecordIndex(peerKey);
     this.requireStatus(index, "pending");
     this.currentIndex = index;
-    this.records[index]!.status = "navigating";
+    const record = this.records[index]!;
+    record.status = "navigating";
+    record.attemptCount += 1;
   }
 
   /** Marks that Telegram opened and validated the intended clean composer. */
@@ -150,6 +157,22 @@ export class DeliveryBatch {
     this.currentIndex = null;
   }
 
+  /** Returns a definitely pre-Send failure to pending for one automatic bounded retry. */
+  public scheduleRetry(peerKey: string, reason: string): void {
+    const index = this.requireRecordIndex(peerKey);
+    const record = this.records[index]!;
+    if (record.sendClicked || record.status === "sending") {
+      throw new Error("A delivery with a clicked Send cannot be scheduled for retry.");
+    }
+    if (!(record.status === "navigating" || record.status === "preparing")) {
+      throw new Error(`Cannot retry recipient from ${record.status}.`);
+    }
+    record.status = "pending";
+    record.retryReason = reason;
+    record.detail = reason;
+    this.currentIndex = null;
+  }
+
   /** Requests a cooperative stop at the next safe pre-Send boundary. */
   public requestCancel(): void {
     this.cancelRequested = true;
@@ -190,6 +213,8 @@ export class DeliveryBatch {
       recipient: record.recipient,
       status: record.status,
       sendClicked: record.sendClicked,
+      attemptCount: record.attemptCount,
+      ...(record.retryReason ? { retryReason: record.retryReason } : {}),
       ...(record.detail ? { detail: record.detail } : {}),
       ...(record.messageId ? { messageId: record.messageId } : {}),
     }));

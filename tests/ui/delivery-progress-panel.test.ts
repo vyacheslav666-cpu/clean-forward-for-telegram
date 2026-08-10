@@ -2,12 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import type { DeliveryBatchSnapshot } from "../../src/delivery/DeliveryBatch";
 import type { Recipient } from "../../src/recipient/Recipient";
 import { DeliveryProgressPanel } from "../../src/ui/DeliveryProgressPanel";
+import type { AppConfig } from "../../src/config";
 
 const recipient: Recipient = { peerKey: "8", title: "Fixture recipient", supported: true };
+const productionConfig: AppConfig = { debug: { showDeliveryResultDialog: false } };
+const debugConfig: AppConfig = { debug: { showDeliveryResultDialog: true } };
 
 function snapshot(overrides: Partial<DeliveryBatchSnapshot> = {}): DeliveryBatchSnapshot {
   return {
-    recipients: [{ recipient, status: "navigating", sendClicked: false }],
+    recipients: [{ recipient, status: "navigating", sendClicked: false, attemptCount: 1 }],
     currentIndex: 0,
     currentRecipient: recipient,
     sentCount: 0,
@@ -37,7 +40,7 @@ describe("DeliveryProgressPanel", () => {
     const onRetry = vi.fn();
     const panel = new DeliveryProgressPanel();
     panel.show(snapshot({
-      recipients: [{ recipient, status: "failed", sendClicked: false, detail: "before Send" }],
+      recipients: [{ recipient, status: "failed", sendClicked: false, attemptCount: 3, detail: "before Send" }],
       currentIndex: null,
       currentRecipient: null,
       failedCount: 1,
@@ -50,5 +53,98 @@ describe("DeliveryProgressPanel", () => {
     expect(shadow.textContent).toContain("before Send");
     shadow.querySelector<HTMLButtonElement>(".retry")!.click();
     expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("shows attempt and retry diagnostics only when the debug modal flag is enabled", () => {
+    const panel = new DeliveryProgressPanel(debugConfig);
+    panel.show(snapshot({
+      recipients: [{
+        recipient,
+        status: "sent",
+        sendClicked: true,
+        attemptCount: 2,
+        retryReason: "peer not ready",
+        messageId: "mid-8",
+      }],
+      currentIndex: null,
+      currentRecipient: null,
+      sentCount: 1,
+      running: false,
+    }), { onCancel: vi.fn(), onRetry: vi.fn(), onClose: vi.fn() });
+
+    const shadow = document.querySelector<HTMLElement>(
+      "[data-clean-forward-delivery-progress]",
+    )!.shadowRoot!;
+    expect(shadow.textContent).toContain("attempts=2");
+    expect(shadow.textContent).toContain("retry=peer not ready");
+    expect(shadow.textContent).toContain("data-mid=mid-8");
+  });
+
+  it("does not mix debug diagnostics into the production result DOM", () => {
+    const panel = new DeliveryProgressPanel(productionConfig);
+    panel.show(snapshot({
+      recipients: [{
+        recipient,
+        status: "failed",
+        sendClicked: false,
+        attemptCount: 3,
+        retryReason: "composer not ready",
+        detail: "Пользовательская ошибка",
+      }],
+      currentIndex: null,
+      currentRecipient: null,
+      failedCount: 1,
+      running: false,
+      retryableCount: 1,
+    }), { onCancel: vi.fn(), onRetry: vi.fn(), onClose: vi.fn() });
+
+    const shadow = document.querySelector<HTMLElement>(
+      "[data-clean-forward-delivery-progress]",
+    )!.shadowRoot!;
+    expect(shadow.textContent).toContain("Пользовательская ошибка");
+    expect(shadow.textContent).not.toContain("attempts=");
+    expect(shadow.textContent).not.toContain("retry=composer not ready");
+  });
+
+  it("consumes Escape and closes only the top-level Clean Forward result overlay", () => {
+    const underlyingPicker = document.createElement("div");
+    underlyingPicker.setAttribute("data-clean-forward-recipient-picker", "");
+    document.body.append(underlyingPicker);
+    const panel = new DeliveryProgressPanel(productionConfig);
+    const onClose = vi.fn(() => panel.hide());
+    panel.show(snapshot({
+      recipients: [{ recipient, status: "failed", sendClicked: false, attemptCount: 3 }],
+      currentIndex: null,
+      currentRecipient: null,
+      failedCount: 1,
+      running: false,
+    }), { onCancel: vi.fn(), onRetry: vi.fn(), onClose });
+    const telegramKeydown = vi.fn();
+    const telegramKeyup = vi.fn();
+    window.addEventListener("keydown", telegramKeydown, true);
+    window.addEventListener("keyup", telegramKeyup, true);
+
+    const keydown = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    const keyup = new KeyboardEvent("keyup", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(keydown);
+    window.dispatchEvent(keyup);
+    window.removeEventListener("keydown", telegramKeydown, true);
+    window.removeEventListener("keyup", telegramKeyup, true);
+
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(keydown.defaultPrevented).toBe(true);
+    expect(keyup.defaultPrevented).toBe(true);
+    expect(telegramKeydown).not.toHaveBeenCalled();
+    expect(telegramKeyup).not.toHaveBeenCalled();
+    expect(document.querySelector("[data-clean-forward-delivery-progress]")).toBeNull();
+    expect(underlyingPicker.isConnected).toBe(true);
   });
 });

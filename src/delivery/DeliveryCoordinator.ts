@@ -1,5 +1,6 @@
 /** Coordinates fail-closed sequential delivery while keeping Telegram mechanics in adapters. */
 import type { MessagePayload } from "../domain/MessagePayload";
+import { appConfig, type AppConfig } from "../config";
 import type { PendingTransfer } from "../domain/PendingTransfer";
 import type { Recipient } from "../recipient/Recipient";
 import type { ComposerAdapter } from "../telegram/ComposerAdapter";
@@ -8,10 +9,13 @@ import type { TelegramSendAdapter, TelegramSendResult } from "../telegram/Telegr
 import type { DeliveryProgressPanel } from "../ui/DeliveryProgressPanel";
 import type { Logger } from "../utils/logger";
 import { DeliveryBatch, type DeliveryBatchSnapshot } from "./DeliveryBatch";
+import { getPreSendRetryDelay } from "./DeliveryRetryPolicy";
 
 interface DeliveryContext {
   readonly payload: MessagePayload;
   readonly batch: DeliveryBatch;
+  readonly sourceRecipient: Readonly<Recipient>;
+  leftSourceChat: boolean;
   controller: AbortController;
   running: Promise<DeliveryBatchSnapshot> | null;
 }
@@ -27,11 +31,13 @@ export class DeliveryCoordinator {
     private readonly pending: PendingTransfer,
     private readonly progress: DeliveryProgressPanel,
     private readonly log: Logger,
+    private readonly config: AppConfig = appConfig,
   ) {}
 
   /** Snapshots selected recipients and starts one automatic delivery batch. */
   public start(
     recipients: readonly Readonly<Recipient>[],
+    sourceRecipient: Readonly<Recipient>,
   ): Promise<DeliveryBatchSnapshot> | null {
     if (this.context || recipients.length === 0) {
       return null;
@@ -44,6 +50,8 @@ export class DeliveryCoordinator {
     const context: DeliveryContext = {
       payload,
       batch: new DeliveryBatch(recipients),
+      sourceRecipient,
+      leftSourceChat: false,
       controller: new AbortController(),
       running: null,
     };
@@ -122,6 +130,9 @@ export class DeliveryCoordinator {
   private async run(context: DeliveryContext): Promise<DeliveryBatchSnapshot> {
     context.batch.beginRun();
     this.progress.update(context.batch.snapshot());
+    // Give the public cancellation API one deterministic pre-navigation boundary without
+    // relying on elapsed time or allowing any Telegram side effect first.
+    await Promise.resolve();
 
     try {
       while (this.context === context) {
@@ -141,10 +152,15 @@ export class DeliveryCoordinator {
     } catch (error) {
       await this.handleUnexpectedError(context, error);
     } finally {
+      await this.restoreSourceChat(context);
       context.batch.finishRun();
       context.running = null;
       this.finalizePendingState(context);
-      this.progress.update(context.batch.snapshot());
+      const snapshot = context.batch.snapshot();
+      this.progress.update(snapshot);
+      if (this.shouldAutoCloseSummary(snapshot)) {
+        this.closeSummary();
+      }
     }
 
     return context.batch.snapshot();
@@ -155,6 +171,9 @@ export class DeliveryCoordinator {
     recipient: Readonly<Recipient>,
   ): Promise<boolean> {
     const peerKey = recipient.peerKey;
+    if (peerKey !== context.sourceRecipient.peerKey) {
+      context.leftSourceChat = true;
+    }
     context.batch.beginNavigation(peerKey);
     this.progress.update(context.batch.snapshot());
     const navigation = await this.navigator.navigate(recipient, context.controller.signal);
@@ -164,18 +183,16 @@ export class DeliveryCoordinator {
       return false;
     }
     if (!navigation.success) {
-      context.batch.markFailed(peerKey, navigation.message);
-      this.log.warn("Delivery остановлен до Send: навигация или composer не прошли проверку.");
-      return false;
+      return this.retryPreSend(context, recipient, "navigation", navigation.message);
     }
 
     const draft = this.composer.beginDraftTransaction(peerKey);
     if (!draft.success) {
-      context.batch.markFailed(peerKey, draft.message);
-      this.log.warn("Delivery остановлен до Send: draft transaction не запущена.");
-      return false;
+      return this.retryPreSend(context, recipient, "draft", draft.message);
     }
 
+    let sendResult: TelegramSendResult | null = null;
+    let preSendFailure: { readonly reason: string; readonly message: string } | null = null;
     try {
       context.batch.beginPreparation(peerKey);
       this.progress.update(context.batch.snapshot());
@@ -187,21 +204,23 @@ export class DeliveryCoordinator {
       }
       if (!prepared.success) {
         await this.composer.cancelPreparedPayload(context.payload, peerKey);
-        context.batch.markFailed(peerKey, prepared.message);
-        this.log.warn("Delivery остановлен до Send: payload не был подготовлен.");
-        return false;
+        preSendFailure = { reason: "preparation", message: prepared.message };
+      } else {
+        sendResult = await this.sender.sendPrepared(
+          context.payload,
+          peerKey,
+          context.controller.signal,
+          () => {
+            context.batch.markSendClicked(peerKey);
+            this.progress.update(context.batch.snapshot());
+          },
+        );
+        if (sendResult.status === "failed") {
+          await this.composer.cancelPreparedPayload(context.payload, peerKey);
+          preSendFailure = { reason: "send-control", message: sendResult.message };
+          sendResult = null;
+        }
       }
-
-      const result = await this.sender.sendPrepared(
-        context.payload,
-        peerKey,
-        context.controller.signal,
-        () => {
-          context.batch.markSendClicked(peerKey);
-          this.progress.update(context.batch.snapshot());
-        },
-      );
-      return this.applySendResult(context, recipient, result);
     } catch (error) {
       await this.handleUnexpectedError(context, error);
       return false;
@@ -211,6 +230,16 @@ export class DeliveryCoordinator {
         this.log.error("Не удалось восстановить пользовательский draft.", restored.message);
       }
     }
+
+    if (preSendFailure) {
+      return this.retryPreSend(
+        context,
+        recipient,
+        preSendFailure.reason,
+        preSendFailure.message,
+      );
+    }
+    return sendResult ? this.applySendResult(context, recipient, sendResult) : false;
   }
 
   private async applySendResult(
@@ -232,9 +261,45 @@ export class DeliveryCoordinator {
     }
 
     await this.composer.cancelPreparedPayload(context.payload, recipient.peerKey);
-    context.batch.markFailed(recipient.peerKey, result.message);
-    this.log.warn("Delivery остановлен до Send: нативный Send недоступен или состояние изменилось.");
-    return false;
+    return this.retryPreSend(context, recipient, "send-control", result.message);
+  }
+
+  private async retryPreSend(
+    context: DeliveryContext,
+    recipient: Readonly<Recipient>,
+    reason: string,
+    message: string,
+  ): Promise<boolean> {
+    const record = context.batch.snapshot().recipients.find(
+      (candidate) => candidate.recipient.peerKey === recipient.peerKey,
+    );
+    const attempt = record?.attemptCount ?? 1;
+    const delayMs = getPreSendRetryDelay(attempt);
+    if (delayMs === null || context.batch.isCancelRequested()) {
+      context.batch.markFailed(recipient.peerKey, message);
+      this.log.warn("Delivery исчерпал безопасные pre-Send попытки.", {
+        peerKey: recipient.peerKey,
+        attempt,
+        reason,
+      });
+      return !context.batch.isCancelRequested();
+    }
+
+    context.batch.scheduleRetry(recipient.peerKey, message);
+    this.progress.update(context.batch.snapshot());
+    this.log.debug("Delivery автоматически повторит безопасную pre-Send попытку.", {
+      peerKey: recipient.peerKey,
+      attempt,
+      nextAttempt: attempt + 1,
+      reason,
+      retryReason: message,
+      delayMs,
+    });
+    await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+    if (context.batch.isCancelRequested()) {
+      return false;
+    }
+    return this.deliverRecipient(context, recipient);
   }
 
   private async handleUnexpectedError(context: DeliveryContext, error: unknown): Promise<void> {
@@ -265,5 +330,32 @@ export class DeliveryCoordinator {
       return;
     }
     this.pending.completeInsertion();
+  }
+
+  private async restoreSourceChat(context: DeliveryContext): Promise<void> {
+    if (!context.leftSourceChat) {
+      return;
+    }
+    const result = await this.navigator.navigate(
+      context.sourceRecipient,
+      new AbortController().signal,
+    );
+    if (!result.success) {
+      this.log.error("Не удалось восстановить исходный чат после delivery batch.", result.message);
+      return;
+    }
+    context.leftSourceChat = false;
+  }
+
+  private shouldAutoCloseSummary(snapshot: DeliveryBatchSnapshot): boolean {
+    return (
+      !this.config.debug.showDeliveryResultDialog &&
+      !snapshot.running &&
+      !snapshot.cancelRequested &&
+      snapshot.sentCount === snapshot.recipients.length &&
+      snapshot.failedCount === 0 &&
+      snapshot.unknownCount === 0 &&
+      snapshot.retryableCount === 0
+    );
   }
 }

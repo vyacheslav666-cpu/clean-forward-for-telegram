@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Recipient } from "../../src/recipient/Recipient";
+import type { RecipientSourceAdapter } from "../../src/recipient/RecipientSourceAdapter";
 import { TelegramChatNavigator } from "../../src/telegram/TelegramChatNavigator";
 import { observeDom } from "../../src/utils/observeDom";
 import { createLogger, installComposer, installDialogRow } from "../helpers";
@@ -63,6 +64,43 @@ describe("TelegramChatNavigator", () => {
     await new TelegramChatNavigator(createLogger()).navigate(recipient, new AbortController().signal);
     expect(mousedown).toHaveBeenCalledOnce();
     expect(click).not.toHaveBeenCalled();
+  });
+
+  it("opens a search-only recipient without requiring a visible recent row", async () => {
+    vi.useFakeTimers();
+    const left = document.createElement("div");
+    left.id = "column-left";
+    const searchContainer = document.createElement("div");
+    searchContainer.id = "search-container";
+    const results = document.createElement("div");
+    results.className = "search-super-content-chats";
+    searchContainer.append(results);
+    left.append(searchContainer);
+    document.body.append(left);
+    const clearSearch = vi.fn();
+    const source = {
+      searchRecipients: vi.fn((_query, _signal, onUpdate) => {
+        const row = document.createElement("a");
+        row.className = "row chatlist-chat";
+        row.dataset.peerId = "99";
+        row.addEventListener("mousedown", () => installComposer("99"));
+        results.append(row);
+        onUpdate([recipient]);
+      }),
+      clearSearch,
+    } as unknown as RecipientSourceAdapter;
+    const navigator = new TelegramChatNavigator(createLogger(), source);
+
+    const navigation = navigator.navigate(recipient, new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(200);
+
+    await expect(navigation).resolves.toMatchObject({ success: true });
+    expect(source.searchRecipients).toHaveBeenCalledWith(
+      "Target",
+      expect.any(AbortSignal),
+      expect.any(Function),
+    );
+    expect(clearSearch).toHaveBeenCalledOnce();
   });
 
   it("finishes with an error when the active composer peerId does not match", async () => {

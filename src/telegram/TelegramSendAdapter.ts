@@ -1,5 +1,7 @@
 /** Clicks Telegram's native Send controls and confirms one new outgoing message element. */
 import type { MessagePayload } from "../domain/MessagePayload";
+import { DELIVERY_RETRY_POLICY } from "../delivery/DeliveryRetryPolicy";
+import type { Logger } from "../utils/logger";
 import { findActiveComposerContext, isActivePeer } from "./TelegramComposerDom";
 import { readTelegramText } from "./readTelegramText";
 
@@ -14,7 +16,9 @@ const REPLY_OR_FORWARD_DRAFT_SELECTOR = ".reply-wrapper";
 // Requiring data-mid avoids treating preview closure or a transient upload placeholder as success.
 const OUTGOING_BUBBLE_SELECTOR = ".bubble.is-out[data-mid][data-peer-id]";
 const PENDING_MESSAGE_SELECTOR = ".sending";
-const OUTGOING_CONFIRM_TIMEOUT_MS = 12_000;
+const MESSAGE_TEXT_SELECTOR = ".message";
+const MESSAGE_TIME_SELECTOR = ".time";
+const MESSAGE_LAYOUT_FIX_SELECTOR = ".clearfix";
 
 /** Confirmed or fail-closed outcome of exactly one native Send attempt. */
 export type TelegramSendResult =
@@ -23,18 +27,25 @@ export type TelegramSendResult =
   | { readonly status: "unknown"; readonly message: string };
 
 interface OutgoingWait {
+  readonly payload: MessagePayload;
   readonly expectedPeerKey: string;
   readonly baselineIds: ReadonlySet<string>;
   readonly resolve: (result: TelegramSendResult) => void;
   readonly signal: AbortSignal;
-  readonly timeoutId: number;
+  timeoutId: number | null;
   sendClicked: boolean;
+  reconciliationAttempt: number;
+  uncertaintyReason: string | null;
   finish(result: TelegramSendResult): void;
 }
 
 /** Uses only observed Telegram Web K DOM controls; it never invokes forwarding APIs or Enter. */
 export class TelegramSendAdapter {
   private activeWait: OutgoingWait | null = null;
+
+  public constructor(
+    private readonly log: Pick<Logger, "debug"> = { debug: () => undefined },
+  ) {}
 
   /** Verifies prepared content, clicks one scoped native Send control, and waits for data-mid. */
   public async sendPrepared(
@@ -56,7 +67,7 @@ export class TelegramSendAdapter {
     }
 
     const baselineIds = this.captureOutgoingIds(expectedPeerKey);
-    const confirmation = this.armConfirmation(expectedPeerKey, baselineIds, signal);
+    const confirmation = this.armConfirmation(payload, expectedPeerKey, baselineIds, signal);
     const wait = this.readActiveWait();
     if (!wait) {
       return { status: "failed", message: "Не удалось запустить подтверждение отправки." };
@@ -70,8 +81,12 @@ export class TelegramSendAdapter {
       control.button.click();
       this.checkActiveWait();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Нативная кнопка Send вызвала ошибку.";
-      wait.finish({ status: "unknown", message });
+      wait.uncertaintyReason =
+        error instanceof Error ? error.message : "Нативная кнопка Send вызвала ошибку.";
+      this.log.debug("Send click стал неопределённым; запущено bounded reconciliation.", {
+        peerKey: expectedPeerKey,
+        reason: wait.uncertaintyReason,
+      });
     }
 
     return confirmation;
@@ -153,36 +168,29 @@ export class TelegramSendAdapter {
   }
 
   private armConfirmation(
+    payload: MessagePayload,
     expectedPeerKey: string,
     baselineIds: ReadonlySet<string>,
     signal: AbortSignal,
   ): Promise<TelegramSendResult> {
     return new Promise((resolve) => {
-      const timeoutId = window.setTimeout(() => {
-        const wait = this.activeWait;
-        if (!wait) {
-          return;
-        }
-        wait.finish(wait.sendClicked
-          ? {
-              status: "unknown",
-              message: "После Send не удалось подтвердить новое исходящее сообщение. Batch остановлен.",
-            }
-          : { status: "failed", message: "Подтверждение было отменено до Send." });
-      }, OUTGOING_CONFIRM_TIMEOUT_MS);
-
       const wait: OutgoingWait = {
+        payload,
         expectedPeerKey,
         baselineIds,
         resolve,
         signal,
-        timeoutId,
+        timeoutId: null,
         sendClicked: false,
+        reconciliationAttempt: 0,
+        uncertaintyReason: null,
         finish: (result) => {
           if (this.activeWait !== wait) {
             return;
           }
-          window.clearTimeout(timeoutId);
+          if (wait.timeoutId !== null) {
+            window.clearTimeout(wait.timeoutId);
+          }
           signal.removeEventListener("abort", onAbort);
           this.activeWait = null;
           resolve(result);
@@ -195,7 +203,46 @@ export class TelegramSendAdapter {
       };
       signal.addEventListener("abort", onAbort, { once: true });
       this.activeWait = wait;
+      wait.timeoutId = window.setTimeout(
+        () => this.reconcileAfterTimeout(wait),
+        DELIVERY_RETRY_POLICY.outgoingConfirmationTimeoutMs,
+      );
     });
+  }
+
+  private reconcileAfterTimeout(wait: OutgoingWait): void {
+    if (this.activeWait !== wait) {
+      return;
+    }
+    wait.timeoutId = null;
+    this.checkActiveWait();
+    if (this.activeWait !== wait) {
+      return;
+    }
+    if (!wait.sendClicked) {
+      wait.finish({ status: "failed", message: "Подтверждение было отменено до Send." });
+      return;
+    }
+
+    const delayMs = DELIVERY_RETRY_POLICY.reconciliationBackoffMs[wait.reconciliationAttempt];
+    if (delayMs === undefined) {
+      wait.finish({
+        status: "unknown",
+        message:
+          wait.uncertaintyReason ??
+          "После Send bounded reconciliation не подтвердил новое исходящее сообщение.",
+      });
+      return;
+    }
+
+    wait.reconciliationAttempt += 1;
+    this.log.debug("Post-Send reconciliation продолжится без повторного Send.", {
+      peerKey: wait.expectedPeerKey,
+      attempt: wait.reconciliationAttempt,
+      maxAttempts: DELIVERY_RETRY_POLICY.reconciliationBackoffMs.length,
+      delayMs,
+    });
+    wait.timeoutId = window.setTimeout(() => this.reconcileAfterTimeout(wait), delayMs);
   }
 
   private checkActiveWait(): void {
@@ -203,14 +250,6 @@ export class TelegramSendAdapter {
     if (!wait || !wait.sendClicked) {
       return;
     }
-    if (!isActivePeer(wait.expectedPeerKey)) {
-      wait.finish({
-        status: "unknown",
-        message: "Активный чат изменился после Send; результат нельзя безопасно определить.",
-      });
-      return;
-    }
-
     const newMessages = this.findOutgoingBubbles(wait.expectedPeerKey).filter((bubble) => {
       const messageId = bubble.dataset.mid;
       return Boolean(messageId && !wait.baselineIds.has(messageId));
@@ -225,9 +264,32 @@ export class TelegramSendAdapter {
 
     const message = newMessages[0];
     const messageId = message?.dataset.mid;
-    if (message && messageId && !message.matches(PENDING_MESSAGE_SELECTOR) && !message.querySelector(PENDING_MESSAGE_SELECTOR)) {
+    if (
+      message &&
+      messageId &&
+      this.matchesPayloadWhenObservable(message, wait.payload) !== false &&
+      !message.matches(PENDING_MESSAGE_SELECTOR) &&
+      !message.querySelector(PENDING_MESSAGE_SELECTOR)
+    ) {
       wait.finish({ status: "sent", messageId });
     }
+  }
+
+  private matchesPayloadWhenObservable(
+    bubble: HTMLElement,
+    payload: MessagePayload,
+  ): boolean | null {
+    if (payload.kind !== "text") {
+      return null;
+    }
+    const message = bubble.querySelector<HTMLElement>(MESSAGE_TEXT_SELECTOR);
+    if (!message) {
+      return null;
+    }
+    const observed = readTelegramText(message, {
+      ignoredSelectors: [MESSAGE_TIME_SELECTOR, MESSAGE_LAYOUT_FIX_SELECTOR],
+    });
+    return normalizeText(observed).trim() === normalizeText(payload.text).trim();
   }
 
   private captureOutgoingIds(peerKey: string): ReadonlySet<string> {

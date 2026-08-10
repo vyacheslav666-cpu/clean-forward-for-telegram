@@ -1,7 +1,12 @@
 /** Renders isolated automatic-delivery progress without depending on Telegram selectors. */
+import { appConfig, type AppConfig } from "../config";
 import type { DeliveryBatchSnapshot, RecipientDeliveryStatus } from "../delivery/DeliveryBatch";
+import { EscapeKeyLifecycle } from "../utils/EscapeKeyLifecycle";
 
 const HOST_ATTRIBUTE = "data-clean-forward-delivery-progress";
+const PROJECT_OVERLAY_SELECTOR =
+  "[data-clean-forward-recipient-picker], [data-clean-forward-delivery-progress]";
+const escapeLifecycle = new EscapeKeyLifecycle();
 const STATUS_LABELS: Readonly<Record<RecipientDeliveryStatus, string>> = Object.freeze({
   pending: "Ожидает",
   navigating: "Открываем чат",
@@ -47,6 +52,7 @@ const PANEL_STYLES = `
   .item[data-state="failed"] .state, .item[data-state="unknown"] .state { color: #d14b4b; }
   .item[data-state="sent"] .state { color: #2a9d62; }
   .detail { grid-column: 1 / -1; margin: 0; color: #d14b4b; font-size: 12px; line-height: 1.35; }
+  .diagnostic { grid-column: 1 / -1; margin: 0; color: var(--cf-muted); font-size: 11px; line-height: 1.35; }
   footer { display: flex; justify-content: flex-end; gap: 9px; padding-top: 12px; border-top: 1px solid var(--cf-border); }
   button { min-height: 38px; border: 0; border-radius: 9px; padding: 8px 14px; cursor: pointer; font: inherit; font-weight: 600; }
   button:disabled { cursor: default; opacity: .48; }
@@ -72,9 +78,11 @@ export class DeliveryProgressPanel {
   private readonly cancelButton: HTMLButtonElement;
   private readonly retryButton: HTMLButtonElement;
   private readonly closeButton: HTMLButtonElement;
+  private readonly escapeLifecycle = escapeLifecycle;
   private actions: DeliveryProgressActions | null = null;
+  private snapshot: DeliveryBatchSnapshot | null = null;
 
-  public constructor() {
+  public constructor(private readonly config: AppConfig = appConfig) {
     this.host = document.createElement("div");
     this.host.setAttribute(HOST_ATTRIBUTE, "");
     this.host.hidden = true;
@@ -116,10 +124,12 @@ export class DeliveryProgressPanel {
     this.applyTheme();
     this.host.hidden = false;
     this.update(snapshot);
+    this.activateEscapeLifecycle();
   }
 
   /** Re-renders progress from immutable delivery state. */
   public update(snapshot: DeliveryBatchSnapshot): void {
+    this.snapshot = snapshot;
     const total = snapshot.recipients.length;
     const displayIndex = snapshot.currentIndex === null ? null : snapshot.currentIndex + 1;
     this.title.textContent = snapshot.running ? "Отправка сообщений" : "Результат отправки";
@@ -143,8 +153,10 @@ export class DeliveryProgressPanel {
 
   /** Hides the panel and releases coordinator callbacks. */
   public hide(): void {
+    this.escapeLifecycle.deactivate();
     this.host.hidden = true;
     this.actions = null;
+    this.snapshot = null;
     this.list.replaceChildren();
     this.host.remove();
   }
@@ -166,7 +178,37 @@ export class DeliveryProgressPanel {
       detail.textContent = record.detail;
       item.append(detail);
     }
+    if (this.config.debug.showDeliveryResultDialog) {
+      const diagnostic = document.createElement("p");
+      diagnostic.className = "diagnostic";
+      diagnostic.textContent = [
+        `attempts=${record.attemptCount}`,
+        record.retryReason ? `retry=${record.retryReason}` : null,
+        record.messageId ? `data-mid=${record.messageId}` : null,
+      ].filter((value): value is string => value !== null).join(" · ");
+      item.append(diagnostic);
+    }
     return item;
+  }
+
+  private activateEscapeLifecycle(): void {
+    this.escapeLifecycle.activate({
+      shouldHandle: () =>
+        this.host.isConnected && !this.host.hidden && this.isTopLevelProjectOverlay(),
+      onEscape: () => {
+        if (this.snapshot?.running) {
+          this.actions?.onCancel();
+        } else {
+          this.actions?.onClose();
+        }
+      },
+    });
+  }
+
+  private isTopLevelProjectOverlay(): boolean {
+    const visible = Array.from(document.querySelectorAll<HTMLElement>(PROJECT_OVERLAY_SELECTOR))
+      .filter((overlay) => overlay.isConnected && !overlay.hidden);
+    return visible[visible.length - 1] === this.host;
   }
 
   private ensureMounted(): void {
