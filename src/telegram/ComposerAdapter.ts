@@ -1,7 +1,12 @@
 /** Orchestrates safe composer insertion while Telegram-specific mechanics stay in the DOM adapter. */
-import type { MessagePayload } from "../domain/MessagePayload";
-import type { ImageMessagePayload } from "../domain/MessagePayload";
+import type {
+  ImageDeliveryPayload,
+  TelegramDeliveryPayload,
+} from "../domain/TelegramDeliveryPayload";
+import { toTelegramDeliveryPayloadUnit } from "../domain/MessagePayload";
+import type { TransferUnit } from "../domain/TransferUnit";
 import { createImageFile } from "./ImageFileFactory";
+import { createTransferFile } from "./TransferFileFactory";
 import type { MediaModeActivator } from "./MediaModeActivator";
 import type { ComposerDraftTransactionStart } from "./ComposerDraftTransaction";
 import type { TelegramDomAdapter } from "./TelegramDomAdapter";
@@ -44,7 +49,7 @@ export class ComposerAdapter {
 
   /** Attempts to populate the current composer without activating a Send control itself. */
   public async insert(
-    payload: MessagePayload,
+    payload: TelegramDeliveryPayload,
     expectedPeerKey: string,
   ): Promise<ComposerInsertResult> {
     if (payload.kind === "image") {
@@ -56,15 +61,54 @@ export class ComposerAdapter {
       : { success: false, message: "Не удалось вставить текст в активный composer." };
   }
 
+  /** Prepares one generalized unit or fails before Send when no proven native strategy exists. */
+  public async prepareUnit(
+    unit: TransferUnit,
+    expectedPeerKey: string,
+  ): Promise<ComposerInsertResult> {
+    const payload = toTelegramDeliveryPayloadUnit(unit);
+    if (payload) {
+      return this.insert(payload, expectedPeerKey);
+    }
+    if (unit.kind === "file" || unit.kind === "media-group") {
+      return this.prepareUploadUnit(unit, expectedPeerKey);
+    }
+    if (unit.kind === "text" && unit.content.kind === "formatted-text") {
+      return {
+        success: false,
+        message: "Formatted entities have no proven lossless native composer injection contract.",
+      };
+    }
+    if (unit.kind === "text") {
+      return {
+        success: false,
+        message: "The requested link-preview policy has no proven native composer control.",
+      };
+    }
+    return {
+      success: false,
+      message: "The captured poll template lacks every setting exposed by the current Telegram popup.",
+    };
+  }
+
   /** Removes only project-owned prepared content when cancellation happens before Send. */
   public async cancelPreparedPayload(
-    payload: MessagePayload,
+    payload: TelegramDeliveryPayload,
     expectedPeerKey: string,
   ): Promise<boolean> {
     if (payload.kind === "image") {
       return this.cancelPreparedPreview();
     }
     return this.dom.clearPreparedText(payload.text, expectedPeerKey);
+  }
+
+  /** Removes only content prepared for one generalized unit before its Send boundary. */
+  public async cancelPreparedUnit(unit: TransferUnit, expectedPeerKey: string): Promise<boolean> {
+    const payload = toTelegramDeliveryPayloadUnit(unit);
+    if (payload) return this.cancelPreparedPayload(payload, expectedPeerKey);
+    return unit.kind === "file" || unit.kind === "media-group"
+      ? this.cancelPreparedPreview()
+      : true;
   }
 
   /** Safely closes a media preview left open after a recoverable partial failure. */
@@ -81,7 +125,7 @@ export class ComposerAdapter {
   }
 
   private async prepareImage(
-    payload: ImageMessagePayload,
+    payload: ImageDeliveryPayload,
     expectedPeerKey: string,
   ): Promise<ComposerInsertResult> {
     if (this.imageOperationInProgress) {
@@ -155,6 +199,55 @@ export class ComposerAdapter {
       }
 
       return { success: false, message: integrationError.message };
+    } finally {
+      this.imageOperationInProgress = false;
+    }
+  }
+
+  private async prepareUploadUnit(
+    unit: Extract<TransferUnit, { kind: "file" | "media-group" }>,
+    expectedPeerKey: string,
+  ): Promise<ComposerInsertResult> {
+    if (this.imageOperationInProgress) {
+      return { success: false, message: OPERATION_IN_PROGRESS_MESSAGE };
+    }
+
+    const items = unit.kind === "file" ? [unit.item] : unit.items;
+    const captions = items.filter((item) => item.caption);
+    if (
+      captions.some((item) => (item.caption?.entities.length ?? 0) > 0) ||
+      captions.length > 1 ||
+      (captions.length === 1 && captions[0] !== items[0])
+    ) {
+      return { success: false, message: "Native upload cannot preserve these caption boundaries losslessly." };
+    }
+    if (unit.kind === "media-group" && unit.expectedGroups.length !== 1) {
+      return { success: false, message: "Telegram preview cannot prove the captured album partition." };
+    }
+
+    this.imageOperationInProgress = true;
+    if (!this.preview.hasActivePreview()) this.ownsOpenPreview = false;
+    try {
+      const mode = unit.delivery.prepareCapability === "document-upload" ? "document" : "media";
+      const target = await this.mediaMode.arm(mode);
+      if (target.peerId !== expectedPeerKey) {
+        throw new TelegramIntegrationError("peer-changed", "Telegram opened another chat before upload preparation.");
+      }
+      const files = items.map((item) => createTransferFile(item.media));
+      this.preview.selectFiles(target, files);
+      const session = await this.preview.waitUntilReadyForUnit(target.peerId, unit);
+      this.ownsOpenPreview = true;
+      const caption = items[0]?.caption?.text;
+      if (caption) await this.preview.insertCaption(session, caption);
+      return { success: true, message: "Native upload preview is ready and peer-scoped." };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Upload preparation failed.";
+      if (this.preview.hasActivePreview()) {
+        const cleaned = await this.preview.cancelActivePreview();
+        this.ownsOpenPreview = !cleaned;
+        return { success: false, message: cleaned ? message : `${message} Preview cleanup was not confirmed.` };
+      }
+      return { success: false, message };
     } finally {
       this.imageOperationInProgress = false;
     }

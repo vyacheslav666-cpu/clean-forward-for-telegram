@@ -83,7 +83,10 @@ describe("TelegramChatNavigator", () => {
         const row = document.createElement("a");
         row.className = "row chatlist-chat";
         row.dataset.peerId = "99";
-        row.addEventListener("mousedown", () => installComposer("99"));
+        row.addEventListener("mousedown", () => {
+          row.remove();
+          queueMicrotask(() => installComposer("99"));
+        });
         results.append(row);
         onUpdate([recipient]);
       }),
@@ -92,7 +95,7 @@ describe("TelegramChatNavigator", () => {
     const navigator = new TelegramChatNavigator(createLogger(), source);
 
     const navigation = navigator.navigate(recipient, new AbortController().signal);
-    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(700);
 
     await expect(navigation).resolves.toMatchObject({ success: true });
     expect(source.searchRecipients).toHaveBeenCalledWith(
@@ -101,6 +104,139 @@ describe("TelegramChatNavigator", () => {
       expect.any(Function),
     );
     expect(clearSearch).toHaveBeenCalledOnce();
+  });
+
+  it("freshly resolves search again after a transient search-start failure", async () => {
+    vi.useFakeTimers();
+    const left = document.createElement("div");
+    left.id = "column-left";
+    left.innerHTML = '<div id="search-container"><div class="search-super-content-chats"></div></div>';
+    document.body.append(left);
+    let calls = 0;
+    const source = {
+      searchRecipients: vi.fn((_query, _signal, onUpdate) => {
+        calls += 1;
+        if (calls === 1) {
+          throw new Error("input is being replaced");
+        }
+        const row = document.createElement("a");
+        row.className = "row chatlist-chat";
+        row.dataset.peerId = "99";
+        row.addEventListener("mousedown", () => {
+          row.remove();
+          installComposer("99");
+        });
+        left.querySelector(".search-super-content-chats")!.append(row);
+        onUpdate([recipient]);
+      }),
+      clearSearch: vi.fn(),
+    } as unknown as RecipientSourceAdapter;
+
+    const navigation = new TelegramChatNavigator(createLogger(), source).navigate(
+      recipient,
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(navigation).resolves.toMatchObject({ success: true });
+    expect(source.searchRecipients).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the public TWeb route as a fallback and still waits for exact composer proof", async () => {
+    vi.useFakeTimers();
+    const source = {
+      searchRecipients: vi.fn(),
+      clearSearch: vi.fn(),
+      waitForSearchSettled: vi.fn(async () => undefined),
+    } as unknown as RecipientSourceAdapter;
+    const onHashChange = (): void => {
+      if (window.location.hash === "#/im?p=99") {
+        installComposer("99");
+      }
+    };
+    window.addEventListener("hashchange", onHashChange);
+
+    try {
+      const navigation = new TelegramChatNavigator(createLogger(), source).navigate(
+        recipient,
+        new AbortController().signal,
+      );
+      await vi.advanceTimersByTimeAsync(1_500);
+
+      await expect(navigation).resolves.toMatchObject({ success: true });
+      expect(window.location.hash).toBe("#/im?p=99");
+    } finally {
+      window.removeEventListener("hashchange", onHashChange);
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
+  it("uses the original successful query instead of the display title", async () => {
+    vi.useFakeTimers();
+    const left = document.createElement("div");
+    left.id = "column-left";
+    left.innerHTML = '<div id="search-container"><div class="search-super-content-chats"></div></div>';
+    document.body.append(left);
+    const target = { ...recipient, title: "Display Name", searchQuery: "@exact_username" };
+    const source = {
+      searchRecipients: vi.fn((query, _signal, onUpdate) => {
+        if (query !== "@exact_username") {
+          return;
+        }
+        const row = document.createElement("a");
+        row.className = "row chatlist-chat";
+        row.dataset.peerId = "99";
+        row.addEventListener("mousedown", () => installComposer("99"));
+        left.querySelector(".search-super-content-chats")!.append(row);
+        onUpdate([target]);
+      }),
+      clearSearch: vi.fn(),
+    } as unknown as RecipientSourceAdapter;
+
+    const navigation = new TelegramChatNavigator(createLogger(), source).navigate(
+      target,
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(700);
+
+    await expect(navigation).resolves.toMatchObject({ success: true });
+    expect(source.searchRecipients).toHaveBeenCalledWith(
+      "@exact_username",
+      expect.any(AbortSignal),
+      expect.any(Function),
+    );
+  });
+
+  it("ignores a stale hidden composer outside the active main chat", async () => {
+    vi.useFakeTimers();
+    installComposer("100").closest(".chat-input-main")!.classList.add("hide");
+    const row = installDialogRow("99");
+    row.addEventListener("mousedown", () => {
+      const column = document.createElement("section");
+      column.id = "column-center";
+      const chats = document.createElement("div");
+      chats.className = "chats-container";
+      const chat = document.createElement("div");
+      chat.className = "chat tabs-tab active";
+      const owner = document.createElement("div");
+      owner.className = "chat-input chat-input-main";
+      const composer = document.createElement("div");
+      composer.className = "input-message-input";
+      composer.setAttribute("contenteditable", "true");
+      composer.dataset.peerId = "99";
+      owner.append(composer);
+      chat.append(owner);
+      chats.append(chat);
+      column.append(chats);
+      document.body.append(column);
+    });
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(navigation).resolves.toMatchObject({ success: true });
   });
 
   it("finishes with an error when the active composer peerId does not match", async () => {

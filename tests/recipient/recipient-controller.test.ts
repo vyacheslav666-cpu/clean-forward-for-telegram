@@ -6,7 +6,7 @@ import type { RecipientSourceAdapter } from "../../src/recipient/RecipientSource
 import type { ComposerAdapter } from "../../src/telegram/ComposerAdapter";
 import type { TelegramChatNavigator } from "../../src/telegram/TelegramChatNavigator";
 import { RecipientPicker, type RecipientPickerActions } from "../../src/ui/RecipientPicker";
-import { createLogger } from "../helpers";
+import { createLogger, createTextMessagePayload } from "../helpers";
 
 const recipient: Recipient = { peerKey: "7", title: "Fixture recipient", supported: true };
 
@@ -31,7 +31,7 @@ function createController(picker: RecipientPicker, pending: PendingTransfer) {
 describe("RecipientPickerController", () => {
   it("clears pending state when Cancel is clicked", async () => {
     const pending = new PendingTransfer();
-    pending.select({ kind: "text", text: "fixture-payload" });
+    pending.select(createTextMessagePayload("fixture-payload"));
     const picker = new RecipientPicker();
     const controller = createController(picker, pending);
     await controller.open();
@@ -45,7 +45,7 @@ describe("RecipientPickerController", () => {
 
   it("clears pending state when the close cross is clicked", async () => {
     const pending = new PendingTransfer();
-    pending.select({ kind: "text", text: "fixture-payload" });
+    pending.select(createTextMessagePayload("fixture-payload"));
     const picker = new RecipientPicker();
     const controller = createController(picker, pending);
     await controller.open();
@@ -59,7 +59,7 @@ describe("RecipientPickerController", () => {
 
   it("keeps the payload after a recoverable preparation error", async () => {
     const pending = new PendingTransfer();
-    const payload = { kind: "text", text: "fixture-retry" } as const;
+    const payload = createTextMessagePayload("fixture-retry");
     pending.select(payload);
     let actions: RecipientPickerActions | null = null;
     const picker = {
@@ -102,7 +102,7 @@ describe("RecipientPickerController", () => {
 
   it("aborts the active session and drops temporary callbacks on close", async () => {
     const pending = new PendingTransfer();
-    pending.select({ kind: "text", text: "fixture-payload" });
+    pending.select(createTextMessagePayload("fixture-payload"));
     let observedSignal: AbortSignal | null = null;
     const source: RecipientSourceAdapter = {
       listLoadedRecipients: vi.fn((signal) => {
@@ -142,7 +142,7 @@ describe("RecipientPickerController", () => {
 
   it("clearing search restores recent recipients without losing selection", async () => {
     const pending = new PendingTransfer();
-    pending.select({ kind: "text", text: "fixture-payload" });
+    pending.select(createTextMessagePayload("fixture-payload"));
     const recent: Recipient = { peerKey: "10", title: "Recent", supported: true };
     const found: Recipient = { peerKey: "20", title: "Found remotely", supported: true };
     let actions: RecipientPickerActions | null = null;

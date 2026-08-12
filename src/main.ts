@@ -10,6 +10,8 @@ import { TelegramChatNavigator } from "./telegram/TelegramChatNavigator";
 import { ContextMenuIntegration } from "./telegram/TelegramContextMenuIntegration";
 import { TelegramDomAdapter } from "./telegram/TelegramDomAdapter";
 import { TelegramRecipientSourceAdapter } from "./telegram/TelegramRecipientSourceAdapter";
+import { TelegramSelectionDomAdapter } from "./telegram/TelegramSelectionDomAdapter";
+import { TelegramSelectionIntegration } from "./telegram/TelegramSelectionIntegration";
 import { TelegramSendAdapter } from "./telegram/TelegramSendAdapter";
 import { UploadPreviewAdapter } from "./telegram/UploadPreviewAdapter";
 import { DeliveryProgressPanel } from "./ui/DeliveryProgressPanel";
@@ -19,6 +21,7 @@ import { logger } from "./utils/logger";
 /** Creates one instance of every application service and starts the controller. */
 function bootstrap(): void {
   const telegramDom = new TelegramDomAdapter(logger);
+  const telegramSelection = new TelegramSelectionDomAdapter(telegramDom, logger);
   const pending = new PendingTransfer();
   const preview = new UploadPreviewAdapter();
   const recipientSource = new TelegramRecipientSourceAdapter();
@@ -50,6 +53,8 @@ function bootstrap(): void {
     new MessageExtractor(telegramDom, logger),
     pending,
     new ContextMenuIntegration(logger),
+    telegramSelection,
+    new TelegramSelectionIntegration(logger),
     recipientController,
     logger,
   );

@@ -1,17 +1,17 @@
 /** Owns the one pending transfer and deliberately keeps it out of persistent storage. */
 import type { MessagePayload } from "./MessagePayload";
 
-/** In-memory storage for the message currently waiting to be inserted. */
+/** In-memory storage for the immutable source bundle currently awaiting delivery. */
 export class PendingTransfer {
   private payload: MessagePayload | null = null;
   private state: "empty" | "ready" | "inserting" = "empty";
 
-  /** Replaces any earlier selection with the newly extracted message. */
+  /** Replaces any earlier selection with a fully captured immutable bundle. */
   public select(payload: MessagePayload): boolean {
     if (this.state === "inserting") {
       return false;
     }
-    // Keeping the Blob only on this instance prevents private media from surviving a reload.
+    // Keeping all Blob references on this instance prevents private media from surviving a reload.
     this.payload = payload;
     this.state = "ready";
     return true;

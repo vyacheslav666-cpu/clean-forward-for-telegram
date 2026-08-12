@@ -8,9 +8,23 @@ const recipient: Recipient = { peerKey: "8", title: "Fixture recipient", support
 const productionConfig: AppConfig = { debug: { showDeliveryResultDialog: false } };
 const debugConfig: AppConfig = { debug: { showDeliveryResultDialog: true } };
 
+function unit(status: "pending" | "sent" | "failed-before-send") {
+  return {
+    index: 0,
+    status,
+    attemptCount: status === "pending" ? 0 : 1,
+    sendClicked: status === "sent",
+    outgoingConfirmed: status === "sent",
+    failedBeforeSend: status === "failed-before-send",
+    unknownAfterSend: false,
+    safeToRetry: status !== "sent",
+    messageIds: status === "sent" ? ["mid-8"] : [],
+  } as const;
+}
+
 function snapshot(overrides: Partial<DeliveryBatchSnapshot> = {}): DeliveryBatchSnapshot {
   return {
-    recipients: [{ recipient, status: "navigating", sendClicked: false, attemptCount: 1 }],
+    recipients: [{ recipient, status: "navigating", sendClicked: false, attemptCount: 1, units: [unit("pending")] }],
     currentIndex: 0,
     currentRecipient: recipient,
     sentCount: 0,
@@ -40,7 +54,7 @@ describe("DeliveryProgressPanel", () => {
     const onRetry = vi.fn();
     const panel = new DeliveryProgressPanel();
     panel.show(snapshot({
-      recipients: [{ recipient, status: "failed", sendClicked: false, attemptCount: 3, detail: "before Send" }],
+      recipients: [{ recipient, status: "failed", sendClicked: false, attemptCount: 3, detail: "before Send", units: [unit("failed-before-send")] }],
       currentIndex: null,
       currentRecipient: null,
       failedCount: 1,
@@ -55,6 +69,25 @@ describe("DeliveryProgressPanel", () => {
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
+  it("surfaces a terminal safety failure and hides retry", () => {
+    const panel = new DeliveryProgressPanel(productionConfig);
+    panel.show(snapshot({
+      currentIndex: null,
+      currentRecipient: null,
+      running: false,
+      retryableCount: 0,
+      safetyFailure: "Prepared content cleanup could not be confirmed.",
+    }), { onCancel: vi.fn(), onRetry: vi.fn(), onClose: vi.fn() });
+
+    const shadow = document.querySelector<HTMLElement>(
+      "[data-clean-forward-delivery-progress]",
+    )!.shadowRoot!;
+    const safety = shadow.querySelector<HTMLElement>("[data-safety-failure]");
+    expect(safety?.textContent).toContain("Остановка безопасности");
+    expect(safety?.textContent).toContain("Prepared content cleanup could not be confirmed.");
+    expect(shadow.querySelector<HTMLButtonElement>(".retry")!.hidden).toBe(true);
+  });
+
   it("shows attempt and retry diagnostics only when the debug modal flag is enabled", () => {
     const panel = new DeliveryProgressPanel(debugConfig);
     panel.show(snapshot({
@@ -65,6 +98,7 @@ describe("DeliveryProgressPanel", () => {
         attemptCount: 2,
         retryReason: "peer not ready",
         messageId: "mid-8",
+        units: [unit("sent")],
       }],
       currentIndex: null,
       currentRecipient: null,
@@ -89,6 +123,7 @@ describe("DeliveryProgressPanel", () => {
         sendClicked: false,
         attemptCount: 3,
         retryReason: "composer not ready",
+        units: [unit("failed-before-send")],
         detail: "Пользовательская ошибка",
       }],
       currentIndex: null,
@@ -113,7 +148,7 @@ describe("DeliveryProgressPanel", () => {
     const panel = new DeliveryProgressPanel(productionConfig);
     const onClose = vi.fn(() => panel.hide());
     panel.show(snapshot({
-      recipients: [{ recipient, status: "failed", sendClicked: false, attemptCount: 3 }],
+      recipients: [{ recipient, status: "failed", sendClicked: false, attemptCount: 3, units: [unit("failed-before-send")] }],
       currentIndex: null,
       currentRecipient: null,
       failedCount: 1,

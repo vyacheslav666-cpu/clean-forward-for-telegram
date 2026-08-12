@@ -7,8 +7,11 @@ import type {
 import { findActiveComposerContext, isComposerEmpty } from "./TelegramComposerDom";
 import { insertTextNatively } from "./nativeTextEditing";
 import { readTelegramText } from "./readTelegramText";
+import type { TelegramMessageSnapshot } from "./TelegramSourceSnapshot";
 
 const MESSAGE_ROOT_SELECTOR = ".bubble[data-mid][data-peer-id]";
+const GROUPED_ITEM_SELECTOR = ".grouped-item[data-mid][data-peer-id]";
+const MESSAGE_IDENTITY_SELECTOR = `${GROUPED_ITEM_SELECTOR}, ${MESSAGE_ROOT_SELECTOR}`;
 const MESSAGE_TEXT_SELECTOR = ".message";
 const MESSAGE_TIME_SELECTOR = ".time";
 const MESSAGE_LAYOUT_FIX_SELECTOR = ".clearfix";
@@ -20,14 +23,6 @@ const ACTIVE_MESSAGE_MENU_WRAPPER_SELECTOR = ".btn-menu.contextmenu.active.has-i
 const MENU_OVERLAY_SELECTOR = ".btn-menu-overlay";
 const ACTIVE_MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
 const REPLY_EDIT_OR_FORWARD_SELECTOR = ".reply-wrapper";
-
-/** DOM snapshot needed by the extractor without leaking Telegram selectors into other layers. */
-export interface TelegramMessageSnapshot {
-  readonly text: string | null;
-  readonly imageUrl: string | null;
-  readonly imageCount: number;
-  readonly hasUnsupportedAttachment: boolean;
-}
 
 /** A verified message element paired with its currently open context menu. */
 export interface TelegramMessageContext {
@@ -56,7 +51,7 @@ export class TelegramDomAdapter {
 
     this.contextListener = (event: MouseEvent) => {
       const target = event.target instanceof Element ? event.target : null;
-      this.lastContextMessage = target?.closest<HTMLElement>(MESSAGE_ROOT_SELECTOR) ?? null;
+      this.lastContextMessage = target?.closest<HTMLElement>(MESSAGE_IDENTITY_SELECTOR) ?? null;
       this.lastLoggedMessageId = null;
       this.log.info("Получен contextmenu Telegram.", {
         targetTag: target?.tagName ?? null,
@@ -115,7 +110,15 @@ export class TelegramDomAdapter {
    * Reads the verified text/caption and photo nodes while rejecting other attachment families.
    */
   public readMessageSnapshot(message: HTMLElement): TelegramMessageSnapshot | null {
-    if (!message.matches(MESSAGE_ROOT_SELECTOR)) {
+    if (!message.matches(MESSAGE_IDENTITY_SELECTOR)) {
+      return null;
+    }
+
+    const sourcePeerKey = message.dataset.peerId?.trim() ?? "";
+    const mid = Number(message.dataset.mid);
+    if (!sourcePeerKey || !Number.isSafeInteger(mid)) {
+      // A synthetic id would break duplicate detection and could bind delivery to the wrong source.
+      this.log.warn("Telegram message identity отсутствует или имеет неожиданный формат.");
       return null;
     }
 
@@ -127,8 +130,17 @@ export class TelegramDomAdapter {
     const hasUnsupportedAttachment = attachments.some(
       (attachment) => !attachment.querySelector(MESSAGE_PHOTO_SELECTOR),
     );
+    const grouped =
+      message.matches(GROUPED_ITEM_SELECTOR) ||
+      message.classList.contains("is-grouped") ||
+      Boolean(message.querySelector(GROUPED_ITEM_SELECTOR));
 
     return {
+      identityResolution: "dom-fallback",
+      sourcePeerKey,
+      mid,
+      date: this.readTimestamp(message),
+      group: grouped ? { kind: "ambiguous-dom" } : { kind: "none" },
       text: textElement
         ? readTelegramText(textElement, {
             ignoredSelectors: [MESSAGE_TIME_SELECTOR, MESSAGE_LAYOUT_FIX_SELECTOR],
@@ -272,6 +284,15 @@ export class TelegramDomAdapter {
       style.display !== "none" &&
       style.visibility !== "hidden"
     );
+  }
+
+  private readTimestamp(message: HTMLElement): number | null {
+    const raw = message.dataset.timestamp ?? message.closest<HTMLElement>(MESSAGE_ROOT_SELECTOR)?.dataset.timestamp;
+    if (!raw) {
+      return null;
+    }
+    const timestamp = Number(raw);
+    return Number.isFinite(timestamp) ? timestamp : null;
   }
 
   private dismissMessageMenu(menuItems: HTMLElement): boolean {

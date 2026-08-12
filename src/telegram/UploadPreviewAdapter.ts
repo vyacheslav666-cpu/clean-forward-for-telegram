@@ -1,5 +1,6 @@
 /** Drives Telegram's local upload preview without ever activating its confirm control. */
 import type { ArmedMediaInput } from "./MediaModeActivator";
+import type { TransferUnit } from "../domain/TransferUnit";
 import { isActivePeer, isComposerEmpty, findActiveComposerContext } from "./TelegramComposerDom";
 import { TelegramIntegrationError } from "./TelegramIntegrationError";
 import { insertTextNatively } from "./nativeTextEditing";
@@ -8,12 +9,16 @@ import { waitForCondition } from "./waitForCondition";
 
 const ACTIVE_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
 const PREVIEW_IMAGE_SELECTOR = ".popup-item.popup-item-media img";
+const MEDIA_ITEM_SELECTOR = ".popup-item.popup-item-media";
+const DOCUMENT_ITEM_SELECTOR = ".popup-item.popup-item-document";
+const ALBUM_ITEM_SELECTOR = ".popup-item-album";
 const CAPTION_EDITOR_SELECTOR =
   '.simple-message-input-input[contenteditable="true"]:not(.input-field-input-fake)';
 const CONFIRM_BUTTON_SELECTOR = ".simple-message-input-confirm";
 const CLOSE_BUTTON_SELECTOR = ".popup-close";
 const UNSTABLE_EDITOR_SELECTOR = ".animating, .is-changing-height";
 const SENDING_SELECTOR = ".sending";
+const UNREADY_MEDIA_SELECTOR = ".preloader, .render-progress";
 const POPUP_APPEAR_TIMEOUT_MS = 5_000;
 const PREVIEW_READY_TIMEOUT_MS = 10_000;
 const CAPTION_STABLE_TIMEOUT_MS = 2_000;
@@ -31,6 +36,11 @@ export interface UploadPreviewSession {
 export class UploadPreviewAdapter {
   /** Assigns exactly one File and dispatches only Telegram's confirmed change event. */
   public selectFile(target: ArmedMediaInput, file: File): void {
+    this.selectFiles(target, [file]);
+  }
+
+  /** Assigns one ordered file list in one change event so Telegram can preserve album grouping. */
+  public selectFiles(target: ArmedMediaInput, files: readonly File[]): void {
     if (!isActivePeer(target.peerId)) {
       throw new TelegramIntegrationError(
         "peer-changed",
@@ -39,12 +49,14 @@ export class UploadPreviewAdapter {
     }
 
     const transfer = new DataTransfer();
-    transfer.items.add(file);
+    for (const file of files) {
+      transfer.items.add(file);
+    }
     target.fileInput.files = transfer.files;
 
     if (
-      target.fileInput.files?.length !== 1 ||
-      target.fileInput.files.item(0)?.name !== file.name
+      target.fileInput.files?.length !== files.length ||
+      files.some((file, index) => target.fileInput.files?.item(index)?.name !== file.name)
     ) {
       throw new TelegramIntegrationError(
         "file-input-unavailable",
@@ -96,6 +108,36 @@ export class UploadPreviewAdapter {
       throw new TelegramIntegrationError(
         "preview-timeout",
         error instanceof Error ? error.message : "Preview картинки не стал готовым.",
+      );
+    }
+  }
+
+  /** Waits for Telegram's native preview topology required by one generalized upload unit. */
+  public async waitUntilReadyForUnit(
+    peerId: string,
+    unit: Extract<TransferUnit, { kind: "file" | "media-group" }>,
+  ): Promise<UploadPreviewSession> {
+    if (unit.kind === "file" && unit.role === "photo") {
+      return this.waitUntilReady(peerId);
+    }
+
+    let popup: HTMLElement;
+    try {
+      popup = await waitForCondition(
+        () => this.findSingleActivePreview(),
+        POPUP_APPEAR_TIMEOUT_MS,
+        "Telegram upload preview did not appear in time.",
+      );
+      return await waitForCondition(
+        () => this.inspectGeneralizedPreview(popup, peerId, unit),
+        PREVIEW_READY_TIMEOUT_MS,
+        "Telegram did not stabilize the expected upload preview.",
+      );
+    } catch (error) {
+      if (error instanceof TelegramIntegrationError) throw error;
+      throw new TelegramIntegrationError(
+        "preview-timeout",
+        error instanceof Error ? error.message : "Upload preview did not become ready.",
       );
     }
   }
@@ -226,6 +268,45 @@ export class UploadPreviewAdapter {
     return imageReady && captionEditor && confirm && !confirm.disabled
       ? { popup, image: image as HTMLImageElement, captionEditor, peerId }
       : null;
+  }
+
+  private inspectGeneralizedPreview(
+    popup: HTMLElement,
+    peerId: string,
+    unit: Extract<TransferUnit, { kind: "file" | "media-group" }>,
+  ): UploadPreviewSession | null {
+    if (!popup.isConnected || !isActivePeer(peerId)) {
+      throw new TelegramIntegrationError("peer-changed", "Destination chat changed during upload preparation.");
+    }
+    const captionEditor = popup.querySelector<HTMLElement>(CAPTION_EDITOR_SELECTOR);
+    const confirm = popup.querySelector<HTMLButtonElement>(CONFIRM_BUTTON_SELECTOR);
+    if (
+      !captionEditor ||
+      !confirm ||
+      confirm.disabled ||
+      popup.querySelector(`${SENDING_SELECTOR}, ${UNREADY_MEDIA_SELECTOR}`)
+    ) {
+      return null;
+    }
+
+    const mediaItems = popup.querySelectorAll(MEDIA_ITEM_SELECTOR).length;
+    const documentItems = popup.querySelectorAll(DOCUMENT_ITEM_SELECTOR).length;
+    if (unit.kind === "file") {
+      const expectedMedia = unit.role === "video" || unit.role === "animation" ? 1 : 0;
+      const expectedDocuments = unit.role === "document" || unit.role === "audio" ? 1 : 0;
+      if (mediaItems !== expectedMedia || documentItems !== expectedDocuments) return null;
+    } else {
+      const albums = popup.querySelectorAll(ALBUM_ITEM_SELECTOR);
+      if (albums.length !== unit.expectedGroups.length || documentItems !== 0) return null;
+      const groupedMediaCount = Array.from(albums).reduce(
+        (count, album) => count + album.querySelectorAll(MEDIA_ITEM_SELECTOR).length,
+        0,
+      );
+      if (groupedMediaCount !== unit.items.length) return null;
+    }
+
+    const image = popup.querySelector<HTMLImageElement>(PREVIEW_IMAGE_SELECTOR) ?? new Image();
+    return { popup, image, captionEditor, peerId };
   }
 
   private isImageReadyWithoutCaption(popup: HTMLElement, peerId: string): boolean {

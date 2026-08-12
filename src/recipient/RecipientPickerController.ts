@@ -1,5 +1,6 @@
 /** Coordinates recipient loading, confirmation, navigation, and message preparation. */
 import type { PendingTransfer } from "../domain/PendingTransfer";
+import { toTelegramDeliveryPayload } from "../domain/MessagePayload";
 import type { DeliveryCoordinator } from "../delivery/DeliveryCoordinator";
 import type { ComposerAdapter } from "../telegram/ComposerAdapter";
 import type { TelegramChatNavigator } from "../telegram/TelegramChatNavigator";
@@ -35,7 +36,18 @@ export class RecipientPickerController {
   public async open(): Promise<void> {
     this.abortSession();
     this.selection.clear();
-    this.sourceRecipient = this.source.getActiveRecipient?.() ?? null;
+    const capturedSource = this.pending.peek()?.source ?? null;
+    const activeSource = this.source.getActiveRecipient?.() ?? null;
+    this.sourceRecipient = capturedSource
+      ? Object.freeze({
+          ...(activeSource?.peerKey === capturedSource.peerKey ? activeSource : {}),
+          peerKey: capturedSource.peerKey,
+          title: capturedSource.title ??
+            (activeSource?.peerKey === capturedSource.peerKey ? activeSource.title : null) ??
+            capturedSource.peerKey,
+          supported: true,
+        })
+      : null;
     const session = new AbortController();
     this.session = session;
     const actions = this.createActions(session);
@@ -176,6 +188,11 @@ export class RecipientPickerController {
         this.picker.setError("Не удалось надёжно определить исходный чат. Обновите Telegram и повторите попытку.");
         return;
       }
+      if (this.pending.peek()?.source.peerKey !== this.sourceRecipient.peerKey) {
+        this.sourceRecipient = null;
+        this.picker.setError("Исходный чат изменился после capture. Повторите выбор сообщений.");
+        return;
+      }
       this.picker.hide();
       const started = this.delivery.start(selectedRecipients, this.sourceRecipient);
       if (!started) {
@@ -208,8 +225,16 @@ export class RecipientPickerController {
     if (!selected) {
       return;
     }
-    const payload = this.pending.beginInsertion();
+    const sourcePayload = this.pending.beginInsertion();
+    if (!sourcePayload) {
+      return;
+    }
+    const payload = toTelegramDeliveryPayload(sourcePayload);
     if (!payload) {
+      this.reopenAfterError(
+        "Выбранный bundle пока не поддерживается текущим Telegram delivery adapter.",
+        session,
+      );
       return;
     }
 

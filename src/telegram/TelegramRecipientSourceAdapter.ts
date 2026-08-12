@@ -1,6 +1,7 @@
 /** Extracts recipient snapshots from the verified Telegram Web K dialog list. */
 import type { Recipient } from "../recipient/Recipient";
 import type { RecipientSourceAdapter } from "../recipient/RecipientSourceAdapter";
+import { findActiveComposerContext } from "./TelegramComposerDom";
 import { TelegramPeerEligibility, type RecipientSourceKind } from "./TelegramPeerEligibility";
 import { readTelegramText } from "./readTelegramText";
 
@@ -19,6 +20,7 @@ const NATIVE_SEARCH_ROW_SELECTOR = "a.row.chatlist-chat[data-peer-id]";
 const NATIVE_SEARCH_BACK_SELECTOR =
   "#column-left .sidebar-header .sidebar-back-button";
 const TITLE_SELECTOR = ".peer-title";
+const ACTIVE_CHAT_TITLE_SELECTOR = ".topbar .peer-title, .topbar .user-title";
 const SUBTITLE_SELECTOR = ".row-subtitle";
 const AVATAR_IMAGE_SELECTOR = ".avatar img";
 const SUBTITLE_IGNORED_SELECTORS = [
@@ -27,6 +29,8 @@ const SUBTITLE_IGNORED_SELECTORS = [
   ".sending-status",
   ".message-time",
 ] as const;
+const SEARCH_TEARDOWN_SETTLE_MS = 180;
+const SEARCH_TEARDOWN_TIMEOUT_MS = 750;
 
 /** Reads recent rows and bridges the project's query into Telegram's native chat search. */
 export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
@@ -35,20 +39,28 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
     readonly originalValue: string;
     readonly wasActive: boolean;
   } | null = null;
+  private searchGeneration = 0;
+  private searchSettlement: Promise<void> = Promise.resolve();
 
   /** Captures source identity without retaining a Telegram-owned DOM node. */
   public getActiveRecipient(): Readonly<Recipient> | null {
-    const rows = document.querySelectorAll<HTMLElement>(ACTIVE_DIALOG_ROW_SELECTOR);
-    if (rows.length !== 1) {
+    const context = findActiveComposerContext();
+    const activeRows = Array.from(
+      document.querySelectorAll<HTMLElement>(ACTIVE_DIALOG_ROW_SELECTOR),
+    );
+    const peerKey = context?.peerId ?? (activeRows.length === 1
+      ? activeRows[0]?.dataset.peerId?.trim() ?? ""
+      : "");
+    if (!peerKey) {
       return null;
     }
-    const row = rows.item(0);
-    const peerKey = row.dataset.peerId?.trim() ?? "";
-    const titleElement = row.querySelector<HTMLElement>(TITLE_SELECTOR);
-    const title = titleElement ? readTelegramText(titleElement).trim() : "";
-    if (!peerKey || !title) {
-      return null;
-    }
+    const matchingActiveRows = activeRows.filter((row) => row.dataset.peerId === peerKey);
+    const rowTitle = matchingActiveRows.length === 1
+      ? matchingActiveRows[0]?.querySelector<HTMLElement>(TITLE_SELECTOR)
+      : null;
+    const chatTitle = context?.chat?.querySelector<HTMLElement>(ACTIVE_CHAT_TITLE_SELECTOR) ?? null;
+    const titleSource = rowTitle ?? chatTitle ?? context?.composer ?? null;
+    const title = (titleSource ? readTelegramText(titleSource).trim() : "") || peerKey;
     return Object.freeze({ peerKey, title, supported: true });
   }
 
@@ -89,6 +101,11 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
       throw new Error("Recipient search query must not be empty.");
     }
 
+    // A new owner supersedes any old settlement loop. Navigation serializes calls by awaiting
+    // waitForSearchSettled(), while rapid picker typing intentionally replaces the old query.
+    this.searchGeneration += 1;
+    this.searchSettlement = Promise.resolve();
+
     const input = this.findUniqueElement<HTMLInputElement>(NATIVE_SEARCH_INPUT_SELECTOR);
     const leftColumn = this.findUniqueElement<HTMLElement>(LEFT_COLUMN_SELECTOR);
     const main = document.querySelector<HTMLElement>(NATIVE_SEARCH_MAIN_SELECTOR);
@@ -111,7 +128,7 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
       if (signal.aborted || currentInput?.value !== normalizedQuery) {
         return;
       }
-      const recipients = this.readSearchRecipients();
+      const recipients = this.readSearchRecipients(normalizedQuery);
       const signature = recipients
         .map((recipient) => `${recipient.peerKey}\u0000${recipient.title}\u0000${recipient.subtitle ?? ""}`)
         .join("\u0001");
@@ -146,22 +163,74 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
   public clearSearch(): void {
     const state = this.nativeSearchState;
     this.nativeSearchState = null;
-    const input = this.findUniqueElement<HTMLInputElement>(NATIVE_SEARCH_INPUT_SELECTOR);
-    if (!state || !input) {
+    if (!state) {
       return;
     }
 
-    this.setNativeSearchValue(input, state.originalValue);
-    if (!state.wasActive) {
-      const main = document.querySelector<HTMLElement>(NATIVE_SEARCH_MAIN_SELECTOR);
-      const back = this.findUniqueElement<HTMLElement>(NATIVE_SEARCH_BACK_SELECTOR);
-      if (main?.classList.contains("is-search-active") && back) {
-        back.click();
+    const generation = ++this.searchGeneration;
+    const startedAt = Date.now();
+    const ownedLeftColumn = document.querySelector<HTMLElement>(LEFT_COLUMN_SELECTOR);
+    const restore = (): boolean => {
+      if (generation !== this.searchGeneration) {
+        return true;
       }
-    }
+      if (document.querySelector<HTMLElement>(LEFT_COLUMN_SELECTOR) !== ownedLeftColumn) {
+        return true;
+      }
+      const input = this.findUniqueElement<HTMLInputElement>(NATIVE_SEARCH_INPUT_SELECTOR);
+      const main = document.querySelector<HTMLElement>(NATIVE_SEARCH_MAIN_SELECTOR);
+      if (!input || !main) {
+        return false;
+      }
+      if (input.value !== state.originalValue) {
+        this.setNativeSearchValue(input, state.originalValue);
+      }
+      if (!state.wasActive && main.classList.contains("is-search-active")) {
+        this.findUniqueElement<HTMLElement>(NATIVE_SEARCH_BACK_SELECTOR)?.click();
+      }
+      return (
+        input.value === state.originalValue &&
+        main.classList.contains("is-search-active") === state.wasActive
+      );
+    };
+
+    // Apply synchronously for UI responsiveness, then keep reacquiring replaced nodes through
+    // TWeb's documented 150 ms search destruction window.
+    restore();
+    this.searchSettlement = new Promise((resolve) => {
+      const poll = (): void => {
+        const elapsed = Date.now() - startedAt;
+        if (
+          generation !== this.searchGeneration ||
+          (restore() && elapsed >= SEARCH_TEARDOWN_SETTLE_MS) ||
+          elapsed >= SEARCH_TEARDOWN_TIMEOUT_MS
+        ) {
+          resolve();
+          return;
+        }
+        window.setTimeout(poll, 25);
+      };
+      window.setTimeout(poll, 25);
+    });
   }
 
-  private readSearchRecipients(): readonly Recipient[] {
+  /** Serializes navigation after TWeb has replaced/destroyed its one-shot search DOM. */
+  public async waitForSearchSettled(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) {
+      throw new DOMException("Recipient search settlement was cancelled.", "AbortError");
+    }
+    await Promise.race([
+      this.searchSettlement,
+      new Promise<never>((_, reject) => {
+        const abort = (): void =>
+          reject(new DOMException("Recipient search settlement was cancelled.", "AbortError"));
+        signal.addEventListener("abort", abort, { once: true });
+        this.searchSettlement.finally(() => signal.removeEventListener("abort", abort));
+      }),
+    ]);
+  }
+
+  private readSearchRecipients(searchQuery: string): readonly Recipient[] {
     const container = this.findUniqueElement<HTMLElement>(NATIVE_SEARCH_RESULTS_SELECTOR);
     if (!container) {
       return Object.freeze([]);
@@ -172,7 +241,7 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
       if (row.closest(".search-group-recent, .search-group-messages")) {
         continue;
       }
-      const recipient = this.readRecipient(row, "search");
+      const recipient = this.readRecipient(row, "search", searchQuery);
       if (recipient && !recipients.has(recipient.peerKey)) {
         recipients.set(recipient.peerKey, recipient);
       }
@@ -191,7 +260,11 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
     return matches.length === 1 ? matches[0] ?? null : null;
   }
 
-  private readRecipient(row: HTMLElement, source: RecipientSourceKind): Recipient | null {
+  private readRecipient(
+    row: HTMLElement,
+    source: RecipientSourceKind,
+    searchQuery?: string,
+  ): Recipient | null {
     const peerKey = row.dataset.peerId?.trim() ?? "";
     const titleElement = row.querySelector<HTMLElement>(TITLE_SELECTOR);
     const title = titleElement ? readTelegramText(titleElement).trim() : "";
@@ -210,6 +283,7 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
     return Object.freeze({
       peerKey,
       title,
+      ...(searchQuery ? { searchQuery } : {}),
       ...(subtitle ? { subtitle } : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
       supported: true,

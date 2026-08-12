@@ -6,6 +6,8 @@ const SIMPLE_PEER_KEY_PATTERN = /^-?\d+$/;
 export interface Recipient {
   readonly peerKey: string;
   readonly title: string;
+  /** Exact native query that resolved this peer; display title is only a fallback locator. */
+  readonly searchQuery?: string;
   readonly subtitle?: string;
   readonly avatarUrl?: string;
   readonly supported: boolean;

@@ -1,18 +1,20 @@
-/** Coordinates fail-closed sequential delivery while keeping Telegram mechanics in adapters. */
-import type { MessagePayload } from "../domain/MessagePayload";
+/** Coordinates fail-closed recipient and per-unit delivery while Telegram mechanics stay in adapters. */
 import { appConfig, type AppConfig } from "../config";
+import type { MessagePayload } from "../domain/MessagePayload";
 import type { PendingTransfer } from "../domain/PendingTransfer";
+import type { TransferUnit } from "../domain/TransferUnit";
 import type { Recipient } from "../recipient/Recipient";
 import type { ComposerAdapter } from "../telegram/ComposerAdapter";
 import type { TelegramChatNavigator } from "../telegram/TelegramChatNavigator";
-import type { TelegramSendAdapter, TelegramSendResult } from "../telegram/TelegramSendAdapter";
+import { findActiveComposerContext } from "../telegram/TelegramComposerDom";
+import type { TelegramSendAdapter } from "../telegram/TelegramSendAdapter";
 import type { DeliveryProgressPanel } from "../ui/DeliveryProgressPanel";
 import type { Logger } from "../utils/logger";
 import { DeliveryBatch, type DeliveryBatchSnapshot } from "./DeliveryBatch";
 import { getPreSendRetryDelay } from "./DeliveryRetryPolicy";
 
 interface DeliveryContext {
-  readonly payload: MessagePayload;
+  readonly sourcePayload: MessagePayload;
   readonly batch: DeliveryBatch;
   readonly sourceRecipient: Readonly<Recipient>;
   leftSourceChat: boolean;
@@ -20,7 +22,7 @@ interface DeliveryContext {
   running: Promise<DeliveryBatchSnapshot> | null;
 }
 
-/** Runs one recipient at a time and stops before any result could become ambiguous. */
+/** Replays one immutable ordered bundle sequentially for each recipient. */
 export class DeliveryCoordinator {
   private context: DeliveryContext | null = null;
 
@@ -42,14 +44,19 @@ export class DeliveryCoordinator {
     if (this.context || recipients.length === 0) {
       return null;
     }
-    const payload = this.pending.beginInsertion();
-    if (!payload) {
+    const pendingPayload = this.pending.peek();
+    if (!pendingPayload || pendingPayload.source.peerKey !== sourceRecipient.peerKey) {
+      this.log.error("Delivery source identity does not match the immutable captured bundle.");
+      return null;
+    }
+    const sourcePayload = this.pending.beginInsertion();
+    if (!sourcePayload) {
       return null;
     }
 
     const context: DeliveryContext = {
-      payload,
-      batch: new DeliveryBatch(recipients),
+      sourcePayload,
+      batch: new DeliveryBatch(recipients, sourcePayload.units.length),
       sourceRecipient,
       leftSourceChat: false,
       controller: new AbortController(),
@@ -65,14 +72,14 @@ export class DeliveryCoordinator {
     return context.running;
   }
 
-  /** Retries only pending or definitely pre-Send failed recipients from the same snapshot. */
+  /** Resumes only pending or definitely pre-click failed units from the same immutable bundle. */
   public retryFailed(): Promise<DeliveryBatchSnapshot> | null {
     const context = this.context;
     if (!context || context.running || !context.batch.resetRetryable()) {
       return null;
     }
     const payload = this.pending.beginInsertion();
-    if (!payload || payload !== context.payload) {
+    if (!payload || payload !== context.sourcePayload) {
       return null;
     }
 
@@ -81,19 +88,17 @@ export class DeliveryCoordinator {
     return context.running;
   }
 
-  /** Requests cancellation at the next boundary before a native Send click. */
+  /** Requests cancellation at the next safe boundary without interrupting post-click reconciliation. */
   public requestCancel(): void {
     const context = this.context;
     if (!context || !context.running) {
       return;
     }
     context.batch.requestCancel();
-    const status = context.batch.currentStatus();
-    if (status === "navigating") {
+    if (context.batch.currentStatus() === "navigating") {
       context.controller.abort();
       this.navigator.cancel();
     }
-    // A sending state has crossed the irreversible boundary, so its confirmation remains alive.
     this.progress.update(context.batch.snapshot());
   }
 
@@ -114,7 +119,7 @@ export class DeliveryCoordinator {
     this.context = null;
   }
 
-  /** Stops pre-Send work when the userscript is disposed without interrupting clicked Send. */
+  /** Stops pre-click work when the userscript is disposed without interrupting clicked Send. */
   public stop(): void {
     this.requestCancel();
     if (!this.context?.running) {
@@ -130,39 +135,42 @@ export class DeliveryCoordinator {
   private async run(context: DeliveryContext): Promise<DeliveryBatchSnapshot> {
     context.batch.beginRun();
     this.progress.update(context.batch.snapshot());
-    // Give the public cancellation API one deterministic pre-navigation boundary without
-    // relying on elapsed time or allowing any Telegram side effect first.
     await Promise.resolve();
 
     try {
-      while (this.context === context) {
-        if (context.batch.isCancelRequested()) {
-          break;
-        }
+      while (
+        this.context === context &&
+        !context.batch.isCancelRequested() &&
+        !context.batch.hasSafetyFailure()
+      ) {
         const recipient = context.batch.nextPending();
-        if (!recipient) {
-          break;
-        }
-
-        const shouldContinue = await this.deliverRecipient(context, recipient);
-        if (!shouldContinue) {
+        if (!recipient || !(await this.deliverRecipient(context, recipient))) {
           break;
         }
       }
     } catch (error) {
       await this.handleUnexpectedError(context, error);
     } finally {
-      await this.restoreSourceChat(context);
-      context.batch.finishRun();
-      context.running = null;
-      this.finalizePendingState(context);
-      const snapshot = context.batch.snapshot();
-      this.progress.update(snapshot);
-      if (this.shouldAutoCloseSummary(snapshot)) {
-        this.closeSummary();
+      try {
+        await this.restoreSourceChat(context);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "Unknown source restoration error.";
+        this.recordSafetyFailure(
+          context,
+          `Source chat restoration failed unexpectedly: ${reason}`,
+          error,
+        );
+      } finally {
+        context.batch.finishRun();
+        context.running = null;
+        this.finalizePendingState(context);
+        const snapshot = context.batch.snapshot();
+        this.progress.update(snapshot);
+        if (this.shouldAutoCloseSummary(snapshot)) {
+          this.closeSummary();
+        }
       }
     }
-
     return context.batch.snapshot();
   }
 
@@ -177,7 +185,6 @@ export class DeliveryCoordinator {
     context.batch.beginNavigation(peerKey);
     this.progress.update(context.batch.snapshot());
     const navigation = await this.navigator.navigate(recipient, context.controller.signal);
-
     if (context.batch.isCancelRequested()) {
       context.batch.returnCurrentToPending();
       return false;
@@ -191,77 +198,156 @@ export class DeliveryCoordinator {
       return this.retryPreSend(context, recipient, "draft", draft.message);
     }
 
-    let sendResult: TelegramSendResult | null = null;
     let preSendFailure: { readonly reason: string; readonly message: string } | null = null;
+    let shouldContinue = true;
+    let draftRestoreSafe = true;
     try {
-      context.batch.beginPreparation(peerKey);
-      this.progress.update(context.batch.snapshot());
-      const prepared = await this.composer.insert(context.payload, peerKey);
-      if (context.batch.isCancelRequested()) {
-        await this.composer.cancelPreparedPayload(context.payload, peerKey);
-        context.batch.returnCurrentToPending();
-        return false;
-      }
-      if (!prepared.success) {
-        await this.composer.cancelPreparedPayload(context.payload, peerKey);
-        preSendFailure = { reason: "preparation", message: prepared.message };
-      } else {
-        sendResult = await this.sender.sendPrepared(
-          context.payload,
-          peerKey,
-          context.controller.signal,
-          () => {
-            context.batch.markSendClicked(peerKey);
-            this.progress.update(context.batch.snapshot());
-          },
-        );
-        if (sendResult.status === "failed") {
-          await this.composer.cancelPreparedPayload(context.payload, peerKey);
-          preSendFailure = { reason: "send-control", message: sendResult.message };
-          sendResult = null;
+      while (true) {
+        if (context.batch.isCancelRequested()) {
+          context.batch.returnCurrentToPending();
+          shouldContinue = false;
+          break;
         }
+        const unitIndex = context.batch.nextPendingUnitIndex(peerKey);
+        if (unitIndex === null) {
+          break;
+        }
+        const unit = context.sourcePayload.units[unitIndex];
+        if (!unit) {
+          throw new Error("Immutable bundle and delivery ledger lost unit correspondence.");
+        }
+        const result = await this.deliverUnit(context, recipient, unit, unitIndex);
+        if (result.kind === "sent") {
+          continue;
+        }
+        if (result.kind === "unknown") {
+          shouldContinue = false;
+          break;
+        }
+        if (result.kind === "cancelled") {
+          shouldContinue = false;
+          break;
+        }
+        if (result.kind === "safety") {
+          shouldContinue = false;
+          break;
+        }
+        preSendFailure = result;
+        break;
       }
     } catch (error) {
       await this.handleUnexpectedError(context, error);
-      return false;
+      shouldContinue = false;
     } finally {
-      const restored = await draft.transaction.restore();
-      if (!restored.success) {
-        this.log.error("Не удалось восстановить пользовательский draft.", restored.message);
-      }
-    }
-
-    if (preSendFailure) {
-      return this.retryPreSend(
+      draftRestoreSafe = await this.restoreRecipientDraft(
         context,
-        recipient,
-        preSendFailure.reason,
-        preSendFailure.message,
+        peerKey,
+        () => draft.transaction.restore(),
       );
     }
-    return sendResult ? this.applySendResult(context, recipient, sendResult) : false;
-  }
 
-  private async applySendResult(
-    context: DeliveryContext,
-    recipient: Readonly<Recipient>,
-    result: TelegramSendResult,
-  ): Promise<boolean> {
-    if (result.status === "sent") {
-      context.batch.markSent(recipient.peerKey, result.messageId);
-      this.log.info("Исходящее сообщение подтверждено новым data-mid.");
-      this.progress.update(context.batch.snapshot());
-      return !context.batch.isCancelRequested();
-    }
-
-    if (result.status === "unknown") {
-      context.batch.markUnknown(recipient.peerKey, result.message);
-      this.log.error("Результат после Send неоднозначен; batch остановлен.");
+    if (!draftRestoreSafe || context.batch.hasSafetyFailure()) {
       return false;
     }
+    if (preSendFailure) {
+      return this.retryPreSend(context, recipient, preSendFailure.reason, preSendFailure.message);
+    }
+    return shouldContinue && !context.batch.isCancelRequested();
+  }
 
-    await this.composer.cancelPreparedPayload(context.payload, recipient.peerKey);
-    return this.retryPreSend(context, recipient, "send-control", result.message);
+  private async deliverUnit(
+    context: DeliveryContext,
+    recipient: Readonly<Recipient>,
+    unit: TransferUnit,
+    unitIndex: number,
+  ): Promise<
+    | { readonly kind: "sent" }
+    | { readonly kind: "unknown" }
+    | { readonly kind: "cancelled" }
+    | { readonly kind: "safety" }
+    | { readonly kind: "failed"; readonly reason: string; readonly message: string }
+  > {
+    const peerKey = recipient.peerKey;
+    context.batch.beginUnitPreparation(peerKey, unitIndex);
+    this.progress.update(context.batch.snapshot());
+    const prepared = await this.composer.prepareUnit(unit, peerKey);
+    if (context.batch.isCancelRequested()) {
+      const cleanupSafe = await this.cancelPreparedUnitSafely(
+        context,
+        unit,
+        peerKey,
+        "cancellation",
+      );
+      if (!cleanupSafe) {
+        return { kind: "safety" };
+      }
+      context.batch.returnCurrentToPending();
+      return { kind: "cancelled" };
+    }
+    if (!prepared.success) {
+      const cleanupSafe = await this.cancelPreparedUnitSafely(
+        context,
+        unit,
+        peerKey,
+        "preparation failure",
+      );
+      if (!cleanupSafe) {
+        return { kind: "safety" };
+      }
+      return { kind: "failed", reason: "preparation", message: prepared.message };
+    }
+
+    const sendResult = await this.sender.sendPreparedUnit(
+      unit,
+      peerKey,
+      context.controller.signal,
+      () => {
+        context.batch.markUnitSendClicked(peerKey, unitIndex);
+        this.progress.update(context.batch.snapshot());
+      },
+    );
+    if (sendResult.status === "failed") {
+      const cleanupSafe = await this.cancelPreparedUnitSafely(
+        context,
+        unit,
+        peerKey,
+        "Send-control failure",
+      );
+      if (!cleanupSafe) {
+        return { kind: "safety" };
+      }
+      return { kind: "failed", reason: "send-control", message: sendResult.message };
+    }
+    if (sendResult.status === "unknown") {
+      context.batch.markUnitUnknown(peerKey, unitIndex, sendResult.message);
+      this.log.error("Post-Send result is ambiguous; remaining units and recipients are stopped.");
+      return { kind: "unknown" };
+    }
+
+    const messageIds = sendResult.messageIds ?? [sendResult.messageId];
+    const expectedMessageCount = unit.delivery.outgoing.expectedCount;
+    if (
+      messageIds.length !== expectedMessageCount ||
+      new Set(messageIds).size !== expectedMessageCount
+    ) {
+      const detail = `Outgoing receipt expected ${expectedMessageCount} unique message identities, received ${messageIds.length}.`;
+      context.batch.markUnitUnknown(peerKey, unitIndex, detail);
+      this.log.error("Post-Send receipt is incomplete or ambiguous; delivery stopped.", {
+        peerKey,
+        unitIndex,
+        expectedMessageCount,
+        messageIds,
+      });
+      return { kind: "unknown" };
+    }
+    context.batch.markUnitSent(peerKey, unitIndex, messageIds);
+    this.log.info("Transfer unit confirmed by new outgoing Telegram identities.", {
+      peerKey,
+      unitIndex,
+      messageIds,
+    });
+    this.progress.update(context.batch.snapshot());
+    return { kind: "sent" };
   }
 
   private async retryPreSend(
@@ -270,14 +356,14 @@ export class DeliveryCoordinator {
     reason: string,
     message: string,
   ): Promise<boolean> {
-    const record = context.batch.snapshot().recipients.find(
-      (candidate) => candidate.recipient.peerKey === recipient.peerKey,
-    );
-    const attempt = record?.attemptCount ?? 1;
+    if (context.batch.hasSafetyFailure()) {
+      return false;
+    }
+    const attempt = context.batch.currentUnitAttemptCount(recipient.peerKey);
     const delayMs = getPreSendRetryDelay(attempt);
     if (delayMs === null || context.batch.isCancelRequested()) {
       context.batch.markFailed(recipient.peerKey, message);
-      this.log.warn("Delivery исчерпал безопасные pre-Send попытки.", {
+      this.log.warn("Delivery exhausted safe pre-Send attempts.", {
         peerKey: recipient.peerKey,
         attempt,
         reason,
@@ -287,7 +373,7 @@ export class DeliveryCoordinator {
 
     context.batch.scheduleRetry(recipient.peerKey, message);
     this.progress.update(context.batch.snapshot());
-    this.log.debug("Delivery автоматически повторит безопасную pre-Send попытку.", {
+    this.log.debug("Delivery автоматически повторит только retry-safe работу до Send.", {
       peerKey: recipient.peerKey,
       attempt,
       nextAttempt: attempt + 1,
@@ -296,55 +382,81 @@ export class DeliveryCoordinator {
       delayMs,
     });
     await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
-    if (context.batch.isCancelRequested()) {
-      return false;
-    }
-    return this.deliverRecipient(context, recipient);
+    return context.batch.isCancelRequested() || context.batch.hasSafetyFailure()
+      ? false
+      : this.deliverRecipient(context, recipient);
   }
 
   private async handleUnexpectedError(context: DeliveryContext, error: unknown): Promise<void> {
     const snapshot = context.batch.snapshot();
     const current = snapshot.currentRecipient;
     const status = context.batch.currentStatus();
-    const detail = error instanceof Error ? error.message : "Неизвестная ошибка delivery pipeline.";
-    if (current && status === "sending") {
-      context.batch.markUnknown(current.peerKey, detail);
+    const unitIndex = context.batch.currentUnitIndex();
+    const detail = error instanceof Error ? error.message : "Unknown delivery pipeline error.";
+    if (current && status === "sending" && unitIndex !== null) {
+      context.batch.markUnitUnknown(current.peerKey, unitIndex, detail);
     } else if (current && (status === "navigating" || status === "preparing")) {
-      if (status === "preparing") {
-        await this.composer.cancelPreparedPayload(context.payload, current.peerKey);
+      if (status === "preparing" && unitIndex !== null) {
+        const unit = context.sourcePayload.units[unitIndex];
+        if (unit) {
+          const cleanupSafe = await this.cancelPreparedUnitSafely(
+            context,
+            unit,
+            current.peerKey,
+            "unexpected pre-Send exception",
+          );
+          if (!cleanupSafe) {
+            this.log.error("Unhandled delivery pipeline error.", error);
+            return;
+          }
+        }
+      } else if (status === "preparing") {
+        const pendingUnitIndex = context.batch.nextPendingUnitIndex(current.peerKey);
+        if (pendingUnitIndex !== null) {
+          // A confirmed prior unit leaves the recipient between items; materialize the next
+          // pre-Send state so an infrastructure exception remains explicitly retry-safe.
+          context.batch.beginUnitPreparation(current.peerKey, pendingUnitIndex);
+        }
       }
       context.batch.markFailed(current.peerKey, detail);
     }
-    this.log.error("Необработанная ошибка delivery pipeline.", error);
+    this.log.error("Unhandled delivery pipeline error.", error);
   }
 
   private finalizePendingState(context: DeliveryContext): void {
     const snapshot = context.batch.snapshot();
     if (snapshot.unknownCount > 0) {
-      // Ambiguous delivery must never expose the same payload as retryable.
       this.pending.clear();
-      return;
-    }
-    if (snapshot.retryableCount > 0) {
+    } else if (snapshot.retryableCount > 0) {
       this.pending.restoreAfterFailure();
-      return;
+    } else {
+      this.pending.completeInsertion();
     }
-    this.pending.completeInsertion();
   }
 
   private async restoreSourceChat(context: DeliveryContext): Promise<void> {
-    if (!context.leftSourceChat) {
+    const activePeer = findActiveComposerContext()?.peerId ?? null;
+    if (!context.leftSourceChat && (!activePeer || activePeer === context.sourceRecipient.peerKey)) {
       return;
     }
-    const result = await this.navigator.navigate(
-      context.sourceRecipient,
-      new AbortController().signal,
-    );
-    if (!result.success) {
-      this.log.error("Не удалось восстановить исходный чат после delivery batch.", result.message);
-      return;
+    try {
+      const result = await this.navigator.navigate(
+        context.sourceRecipient,
+        new AbortController().signal,
+      );
+      if (!result.success) {
+        const detail = `Source chat restoration could not be confirmed: ${result.message}`;
+        this.recordSafetyFailure(context, detail);
+        this.log.error("Failed to restore the source chat after delivery batch.", result.message);
+        return;
+      }
+      context.leftSourceChat = false;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown navigation error.";
+      const detail = `Source chat restoration threw before confirmation: ${reason}`;
+      this.recordSafetyFailure(context, detail, error);
+      this.log.error("Source-chat restoration threw after delivery batch.", error);
     }
-    context.leftSourceChat = false;
   }
 
   private shouldAutoCloseSummary(snapshot: DeliveryBatchSnapshot): boolean {
@@ -355,7 +467,80 @@ export class DeliveryCoordinator {
       snapshot.sentCount === snapshot.recipients.length &&
       snapshot.failedCount === 0 &&
       snapshot.unknownCount === 0 &&
-      snapshot.retryableCount === 0
+      snapshot.retryableCount === 0 &&
+      !snapshot.safetyFailure
     );
+  }
+
+  private async cancelPreparedUnitSafely(
+    context: DeliveryContext,
+    unit: TransferUnit,
+    peerKey: string,
+    phase: string,
+  ): Promise<boolean> {
+    try {
+      if (await this.composer.cancelPreparedUnit(unit, peerKey)) {
+        return true;
+      }
+      const detail = `Prepared content cleanup could not be confirmed after ${phase}.`;
+      this.recordSafetyFailure(context, detail);
+      this.markCurrentPreSendFailure(context, peerKey, detail);
+      return false;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown cleanup error.";
+      const detail = `Prepared content cleanup threw after ${phase}: ${reason}`;
+      this.recordSafetyFailure(context, detail, error);
+      this.markCurrentPreSendFailure(context, peerKey, detail);
+      return false;
+    }
+  }
+
+  private async restoreRecipientDraft(
+    context: DeliveryContext,
+    peerKey: string,
+    restore: () => Promise<{ readonly success: boolean; readonly message: string }>,
+  ): Promise<boolean> {
+    try {
+      const result = await restore();
+      if (result.success) {
+        return true;
+      }
+      const detail = `Recipient draft restoration could not be confirmed: ${result.message}`;
+      this.recordSafetyFailure(context, detail);
+      this.markCurrentPreSendFailure(context, peerKey, detail);
+      this.log.error("Failed to restore the recipient draft.", result.message);
+      return false;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown draft restore error.";
+      const detail = `Recipient draft restoration threw: ${reason}`;
+      this.recordSafetyFailure(context, detail, error);
+      this.markCurrentPreSendFailure(context, peerKey, detail);
+      this.log.error("Recipient draft restoration threw.", error);
+      return false;
+    }
+  }
+
+  private markCurrentPreSendFailure(
+    context: DeliveryContext,
+    peerKey: string,
+    detail: string,
+  ): void {
+    const current = context.batch.snapshot().currentRecipient;
+    const status = context.batch.currentStatus();
+    if (
+      current?.peerKey === peerKey &&
+      (status === "navigating" || status === "preparing")
+    ) {
+      context.batch.markFailed(peerKey, detail);
+    }
+  }
+
+  private recordSafetyFailure(
+    context: DeliveryContext,
+    detail: string,
+    cause?: unknown,
+  ): void {
+    context.batch.markSafetyFailure(detail);
+    this.log.error("Delivery stopped because safe cleanup or restoration was not confirmed.", cause ?? detail);
   }
 }

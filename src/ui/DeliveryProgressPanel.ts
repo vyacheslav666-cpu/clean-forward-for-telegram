@@ -44,6 +44,7 @@ const PANEL_STYLES = `
   .headline, .current, .counts { margin: 0; }
   .headline { font-weight: 650; }
   .current { margin-top: 5px; color: var(--cf-muted); }
+  .current[data-safety-failure] { color: #d14b4b; font-weight: 600; }
   .counts { display: flex; gap: 14px; margin-top: 14px; font-size: 13px; }
   .list { display: grid; gap: 7px; margin: 16px 0; padding: 0; list-style: none; }
   .item { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; padding: 9px 10px; border-radius: 9px; background: color-mix(in srgb, var(--cf-bg), var(--cf-muted) 8%); }
@@ -136,11 +137,14 @@ export class DeliveryProgressPanel {
     this.headline.textContent = snapshot.running && displayIndex !== null
       ? `Отправка ${displayIndex} / ${total}`
       : `Обработано: ${snapshot.sentCount + snapshot.failedCount + snapshot.unknownCount} / ${total}`;
-    this.current.textContent = snapshot.currentRecipient
-      ? `Получатель: ${snapshot.currentRecipient.title}`
-      : snapshot.cancelRequested
-        ? "Операция остановлена перед следующим Send."
-        : "Операция завершена.";
+    this.current.toggleAttribute("data-safety-failure", Boolean(snapshot.safetyFailure));
+    this.current.textContent = snapshot.safetyFailure
+      ? `Остановка безопасности: ${snapshot.safetyFailure}`
+      : snapshot.currentRecipient
+        ? `Получатель: ${snapshot.currentRecipient.title}`
+        : snapshot.cancelRequested
+          ? "Операция остановлена перед следующим Send."
+          : "Операция завершена.";
     this.counts.textContent = `Отправлено: ${snapshot.sentCount} · Ошибки: ${snapshot.failedCount} · Неизвестно: ${snapshot.unknownCount}`;
     this.list.replaceChildren(...snapshot.recipients.map((record) => this.renderRecord(record)));
     this.cancelButton.hidden = !snapshot.running;

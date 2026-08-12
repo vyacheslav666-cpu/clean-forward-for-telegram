@@ -1,114 +1,155 @@
 # Clean Forward for Telegram
 
-Экспериментальный userscript для Tampermonkey, который последовательно отправляет копию сообщения в Telegram Web K как новые сообщения — без стандартной отметки о пересылке.
+Экспериментальный Tampermonkey userscript для Telegram Web K. Он создаёт immutable snapshot одного или нескольких исходных сообщений, последовательно открывает выбранные чаты и отправляет содержимое через нативные кнопки Telegram как новые сообщения — без `Forwarded from`.
 
 > [!WARNING]
-> Проект экспериментальный и зависит от внутренней DOM-структуры Telegram Web K. Обновление Telegram может частично или полностью нарушить его работу. Перед отправкой всегда проверяйте получателя и содержимое.
+> Проект зависит от непубличной DOM-структуры Telegram Web K. Любое обновление Telegram может изменить selectors, preview или outgoing markup. При несоответствии проверенного контракта операция должна завершиться fail-closed до Send либо получить `unknown` после уже нажатого Send.
 
-## Возможности
+> [!IMPORTANT]
+> Текущий P0 исправлен и покрыт code-level regression suite, включая два последовательных search-only peer. Полный цикл реальных Send из собранного userscript в авторизованной Telegram-сессии в этом workspace не выполнялся, поэтому релизный статус — **P0 FIXED IN CODE — NEEDS LIVE VERIFICATION**, не `READY`.
 
-- перенос обычного текста;
-- перенос одной фотографии;
-- перенос подписи к одной фотографии;
-- единый автоматический flow для одного или нескольких получателей из уже загруженных диалогов;
-- последовательная отправка через нативные кнопки Telegram с прогрессом и итоговой сводкой;
-- закрытие recipient picker по Escape, крестику или кнопке «Отмена»;
-- подтверждение успеха только по новому исходящему bubble с новым `data-mid`;
-- остановка batch при неоднозначном результате после Send.
+## Пользовательский сценарий
 
-## Ограничения
+1. Откройте контекстное меню одного сообщения либо выделите несколько сообщений в нативном selection mode Telegram.
+2. Нажмите «Отправить как новое».
+3. Выберите одного или нескольких получателей. Порядок выбора сохраняется.
+4. Нажмите «Далее» один раз.
+5. Clean Forward последовательно доставит весь bundle каждому получателю.
+6. После успеха, ошибки, отмены или неизвестного результата userscript попытается вернуть исходный чат.
 
-- поддерживается только [Telegram Web K](https://web.telegram.org/k/);
-- альбомы не поддерживаются;
-- видео не поддерживается;
-- документы не поддерживаются;
-- получатели обрабатываются только последовательно, без параллельной отправки;
-- интерфейс может сломаться после обновления Telegram.
+Ручное подтверждение Send для каждого получателя не требуется. В production-конфигурации итоговое окно полностью успешной операции автоматически скрывается.
 
-Форматирование, ссылки и spoilers переносятся как обычный текст. Список получателей ограничен строками диалогов, уже загруженными Telegram в активной папке.
+## Фактическая support matrix
 
-## Установка через Tampermonkey
+| Тип | Capture model | Native delivery | Статус и ограничения |
+|---|---|---|---|
+| Plain text | DOM fallback или verified Telegram model | Text composer + native Send | Поддерживается end-to-end; политика link preview — только `regenerate` |
+| Photo | Полные bytes, имя и MIME | `Photo or Video` preview + native confirm | Поддерживается; только plain caption без entities |
+| Video | Verified model + полные bytes/metadata | `Photo or Video` preview + native confirm | **Не поддерживается production capture:** delivery strategy тестируется только synthetic model fixtures, пока нет verified model bridge |
+| GIF/animation | Verified model + полные bytes/metadata | `Photo or Video` preview + native confirm | **Не поддерживается production capture:** strategy test-only; Telegram также может транскодировать media |
+| Document | Verified model + полные bytes/имя/MIME | `Document` preview + native confirm | **Не поддерживается production capture:** strategy test-only; thumbnail не считается содержимым файла |
+| Audio/music | Verified model + полные bytes/metadata | `Document` preview + native confirm | **Не поддерживается production capture:** strategy test-only; voice message не преобразуется в audio file |
+| Photo/video album | Полный verified `grouped_id`, 2–10 items | Один grouped preview и один native confirm | **Не поддерживается production capture без model bridge**; DOM-only ambiguous album отклоняется целиком |
+| Несколько сообщений | Ordered immutable bundle | По одному item/group за раз | Поддерживается, если каждый unit имеет безопасную capture и delivery strategy |
+| Formatted text/caption | Entities сохраняются в generalized model | Нет lossless DOM injection | Explicit fail-before-Send; форматирование не сбрасывается молча |
+| Exact/disabled link preview | Policy сохраняется в model | Нет доказанного точного native control | Explicit fail-before-Send |
+| Poll/quiz | Result-free template может быть captured | Текущий popup содержит дополнительные настройки | Explicit fail-before-Send; результаты и voters не копируются |
+| Voice, video note, stickers | Explicit discriminator | Не реализовано | Unsupported (RED), без преобразования в другой смысловой тип |
+| Contact, location/venue | Explicit discriminator | Не реализовано | Unsupported (RED) |
+| Service, game, invoice, story, giveaway, dice | Explicit discriminator | Не реализовано | Unsupported (RED) |
+| Protected, TTL/ephemeral, paid или unavailable media | Restriction flags | Запрещено | Capture отклоняется целиком до recipient picker |
 
-1. Установите расширение Tampermonkey в совместимый браузер.
-2. Клонируйте репозиторий и выполните `npm install`, затем `npm run build`.
-3. Откройте панель Tampermonkey и создайте новый userscript.
-4. Замените его содержимое содержимым файла `dist/clean-forward-for-telegram.user.js`.
-5. Сохраните userscript и откройте `https://web.telegram.org/k/`.
+Нельзя описывать проект как поддерживающий «любое сообщение Telegram»: capture adapter сам по себе не означает end-to-end поддержку. Для model-backed типов production Web K должен предоставить проверяемый read-only model bridge и полные binary bytes; неизвестное состояние отклоняется.
 
-Сборочный файл намеренно не хранится в Git: он создаётся локально из проверяемого исходного кода.
+## Reliability guarantees
 
-## Разработка
+- source bundle и recipient list snapshot immutable и хранятся только в памяти;
+- source navigation target берётся из peer identity captured bundle, а не из поздней sidebar row;
+- сохраняются порядок исходных сообщений и порядок выбора получателей;
+- выполняется только один recipient и один item/group одновременно;
+- используются только нативные Telegram Send controls — не Enter, не Forward и не private send API;
+- navigation проходит `resolve → address → initiate → observe → exact peer → owned composer → stabilize → cleanup → final proof`;
+- exact peer подтверждается реальным contenteditable composer внутри единственного active main-chat, а не URL/title или глобальным composer;
+- каждый search retry заново получает одноразовую row; закрытие search имеет completion barrier перед следующим peer;
+- пользовательский plain-text draft временно освобождается и восстанавливается после попытки recipient;
+- успех требует нового terminal outgoing `data-mid`; закрытие preview и очистка composer успехом не считаются;
+- album подтверждается только полным ожидаемым набором новых grouped `data-mid`;
+- automatic retry ограничен и разрешён только до Send;
+- после Send повтор item/group запрещён; неоднозначность становится `unknown` и останавливает batch;
+- user retry возобновляет только `pending`/`failed-before-send` pairs и не повторяет `sent`/`unknown-after-send`;
+- Cancel до Send очищает только подготовленное Clean Forward содержимое; после Send сначала завершается reconciliation;
+- source-chat restore выполняется после любого terminal outcome и не переписывает delivery statuses при собственной ошибке;
+- Escape перехватывается только верхним Clean Forward overlay и не используется для управления Telegram chat.
+
+## Item-level state
+
+```text
+pending
+  -> preparing
+      -> failed-before-send  (safeToRetry=true)
+      -> sendClicked         (необратимая граница)
+          -> sent
+          -> unknown-after-send
+```
+
+Recipient status вычисляется из вложенных item/group states. Для каждой пары доступны признаки `sendClicked`, `outgoingConfirmed`, `failedBeforeSend`, `unknownAfterSend`, `safeToRetry` и подтверждённые `messageIds`.
+
+## Ограничения интеграции
+
+- поддерживается только `https://web.telegram.org/k/*`;
+- attachment actions `Photo or Video` и `Document` пока зависят от подтверждённых английских labels;
+- recipient navigation использует fresh exact `data-peer-id` rows, bounded native search и официальный `#/im?p=<peer>` только как initiation fallback; URL не считается peer proof;
+- forum topics, sponsored rows и неоднозначные peer keys не выбираются;
+- formatted drafts, reply/edit/forward state и существующий attachment preview не изменяются автоматически;
+- для album отклоняются incomplete group, несовместимое native partitioning, animation внутри группы и caption boundaries, которые нельзя сохранить;
+- browser E2E с авторизованной сессией не входит в автоматическую suite; реальные Send необходимо проверять только в контролируемых чатах.
+- production bootstrap пока не предоставляет verified read-only Telegram model bridge; video/document/audio/album strategies не являются production support.
+
+## Установка
 
 Требуется Node.js 18 или новее.
 
 ```bash
 npm install
-npm run build
-npm test
 npm run validate
 ```
 
-- `npm run build` — проверяет типы и собирает `dist/clean-forward-for-telegram.user.js`;
-- `npm test` — запускает тесты Vitest в jsdom;
-- `npm run validate` — последовательно запускает typecheck, тесты и production-сборку.
+1. Откройте Tampermonkey и создайте userscript.
+2. Замените его содержимое файлом `dist/clean-forward-for-telegram.user.js`.
+3. Сохраните userscript и откройте Telegram Web K.
 
-## Тесты
+Сборка содержит header с `@match https://web.telegram.org/k/*`.
 
-Автоматическая suite использует Vitest и jsdom и покрывает доменное состояние, извлечение текста и одной фотографии, recipient picker, single-recipient flow, composer, отмену и fail-closed сценарии. Fixtures содержат только синтетические значения; авторизованная Telegram-сессия для тестов не нужна.
+## Разработка и проверки
 
 ```bash
+npm run typecheck
 npm test
+npm run build
+npm run validate
 ```
+
+- `typecheck` проверяет TypeScript;
+- `test` запускает Vitest/jsdom regression suite;
+- `build` создаёт `dist/clean-forward-for-telegram.user.js`;
+- `validate` последовательно запускает typecheck, tests и production build.
+
+Fixtures синтетические и не содержат реальных сообщений, peer IDs, cookies или Telegram session data.
 
 ## Архитектура
 
-- `src/app/` координирует пользовательский сценарий;
-- `src/domain/` содержит поддерживаемые payload и временное состояние переноса;
-- `src/delivery/` содержит состояние batch и последовательный delivery coordinator;
-- `src/recipient/` содержит модель получателя, внешнее состояние мультивыбора и controller picker;
-- `src/telegram/` изолирует DOM-контракты Telegram Web K, извлечение содержимого, навигацию и работу с composer;
-- `src/ui/` содержит изолированные Shadow DOM-интерфейсы выбора и прогресса;
-- `src/utils/` содержит DOM observer и логирование;
-- `tests/` проверяет доменную логику и Telegram DOM-адаптеры;
-- `docs/` хранит обезличенные технические исследования интеграции.
+- `src/domain/` — immutable source descriptors, transferable content, ordered bundle и pending in-memory state;
+- `src/telegram/capture/` — type-specific capture adapters с atomic fail-closed snapshot;
+- `src/telegram/` — Telegram DOM contracts, navigation, draft transaction, preparation и native Send confirmation;
+- `src/delivery/DeliveryBatch.ts` — nested recipient/item ledger и duplicate-prevention states;
+- `src/delivery/DeliveryCoordinator.ts` — последовательный N×M обход, retry boundaries, draft/source restoration;
+- `src/recipient/` — immutable recipient selection и picker controller;
+- `src/ui/` — Shadow DOM picker и progress UI без Telegram selectors;
+- `tests/` — domain, DOM, integration и reliability regressions.
 
-Payload хранится только в памяти. Штатный Forward flow и приватный Telegram API отправки не используются. Для фотографии создаётся локальный `File`, после чего Telegram открывает собственный upload preview; delivery coordinator нажимает только scoped нативную кнопку Send Photo.
+Payload и binary Blob живут только в памяти. `localStorage`, IndexedDB, Telegram Bot API, native Forward и private Telegram send methods не используются.
 
-Picker позволяет отметить несколько строк, сохраняет выбор при локальном поиске и показывает его количество. «Далее» фиксирует порядок выбранных получателей и запускает один последовательный batch. Уже подтверждённые получатели не повторяются при retry; результат без подтверждённого исходящего bubble получает статус `unknown` и останавливает batch.
+## Ручная проверка перед релизом
 
-## Безопасность и приватность
+Используйте только контролируемые тестовые чаты и останавливайтесь при любой неоднозначности:
 
-- скрипт работает только на `https://web.telegram.org/k/*`;
-- нет сетевых запросов к сторонним сервисам;
-- содержимое сообщений и изображения не записываются в `localStorage`, IndexedDB или файлы;
-- cookies, session data и browser profiles не требуются проекту и исключены из Git;
-- выбор получателя выполняется по локально загруженным строкам интерфейса Telegram;
-- отправка выполняется автоматически только через нативные Send-кнопки после проверок peer, composer, draft и preview.
+- 1 text → 1 recipient и 1 text → 2 recipients;
+- 3 ordered text messages → 1 и 2 recipients;
+- source chat также выбран recipient;
+- photo и photo + caption; video/document/audio — только после подключения verified production model bridge;
+- compatible photo/video album — только после подключения model bridge: один native Send и полный grouped result;
+- пользовательский draft в destination до success, pre-Send failure и Cancel;
+- recipient/composer/upload-preview rerender;
+- source chat отсутствует в recent list и находится через search fallback;
+- Cancel до Send, во время подготовки и сразу после Send click;
+- network/DOM delay до Send и confirmation timeout после Send;
+- retry после частичного bundle: ранее подтверждённые пары не появляются повторно;
+- у новых сообщений отсутствует forwarded label, а исходный чат восстановлен.
 
-Не добавляйте в issues, тесты или pull requests реальные сообщения, названия чатов, `peerId`, cookies, данные сессий и снимки авторизованного интерфейса. О проблемах безопасности сообщайте согласно [SECURITY.md](SECURITY.md).
+## Безопасность
 
-## Известные проблемы
-
-- DOM-селекторы Telegram не являются публичным API и могут измениться без предупреждения;
-- пункт вложения `Photo or Video` сейчас зависит от английской подписи интерфейса;
-- доступны только уже отрисованные Telegram строки диалогов;
-- forum topics, sponsored-строки и составные ключи получателей намеренно недоступны;
-- форматированный текст переносится без исходного форматирования;
-- browser-driven end-to-end тесты с авторизованной сессией не входят в репозиторий.
-
-## Roadmap
-
-Направления для будущего исследования, не обещающие реализацию:
-
-- повысить устойчивость DOM-контрактов к обновлениям Telegram Web K;
-- исследовать locale-independent выбор режима загрузки фотографии;
-- добавить безопасные обезличенные browser-level проверки без хранения сессий;
-- оценить поддержку дополнительных типов сообщений и получателей только при сохранении ручной отправки.
-
-## Участие в разработке
-
-Правила подготовки изменений описаны в [CONTRIBUTING.md](CONTRIBUTING.md). История релизов ведётся в [CHANGELOG.md](CHANGELOG.md).
+Не добавляйте в issues, tests или commits реальные сообщения, названия чатов, peer IDs, cookies, session data или screenshots авторизованного интерфейса. Уязвимости сообщайте согласно [SECURITY.md](SECURITY.md).
 
 ## Лицензия
 
-Проект распространяется по лицензии [MIT](LICENSE).
+[MIT](LICENSE)

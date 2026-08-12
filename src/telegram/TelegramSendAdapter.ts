@@ -1,5 +1,7 @@
 /** Clicks Telegram's native Send controls and confirms one new outgoing message element. */
-import type { MessagePayload } from "../domain/MessagePayload";
+import type { TelegramDeliveryPayload } from "../domain/TelegramDeliveryPayload";
+import { toTelegramDeliveryPayloadUnit } from "../domain/MessagePayload";
+import type { TransferUnit } from "../domain/TransferUnit";
 import { DELIVERY_RETRY_POLICY } from "../delivery/DeliveryRetryPolicy";
 import type { Logger } from "../utils/logger";
 import { findActiveComposerContext, isActivePeer } from "./TelegramComposerDom";
@@ -8,13 +10,17 @@ import { readTelegramText } from "./readTelegramText";
 const TEXT_SEND_BUTTON_SELECTOR = ".btn-send";
 const ACTIVE_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
 const PREVIEW_IMAGE_SELECTOR = ".popup-item.popup-item-media img";
+const PREVIEW_MEDIA_ITEM_SELECTOR = ".popup-item.popup-item-media";
+const PREVIEW_DOCUMENT_ITEM_SELECTOR = ".popup-item.popup-item-document";
+const PREVIEW_ALBUM_SELECTOR = ".popup-item-album";
 const CAPTION_EDITOR_SELECTOR =
   '.simple-message-input-input[contenteditable="true"]:not(.input-field-input-fake)';
 const PHOTO_SEND_BUTTON_SELECTOR = ".simple-message-input-confirm";
 const REPLY_OR_FORWARD_DRAFT_SELECTOR = ".reply-wrapper";
 // Telegram Web K renders acknowledged messages from the current account as is-out bubbles.
 // Requiring data-mid avoids treating preview closure or a transient upload placeholder as success.
-const OUTGOING_BUBBLE_SELECTOR = ".bubble.is-out[data-mid][data-peer-id]";
+const OUTGOING_BUBBLE_SELECTOR =
+  ".bubble.is-out[data-mid][data-peer-id], .bubble.is-out .grouped-item[data-mid]";
 const PENDING_MESSAGE_SELECTOR = ".sending";
 const MESSAGE_TEXT_SELECTOR = ".message";
 const MESSAGE_TIME_SELECTOR = ".time";
@@ -22,12 +28,14 @@ const MESSAGE_LAYOUT_FIX_SELECTOR = ".clearfix";
 
 /** Confirmed or fail-closed outcome of exactly one native Send attempt. */
 export type TelegramSendResult =
-  | { readonly status: "sent"; readonly messageId: string }
+  | { readonly status: "sent"; readonly messageId: string; readonly messageIds?: readonly string[] }
   | { readonly status: "failed"; readonly message: string }
   | { readonly status: "unknown"; readonly message: string };
 
 interface OutgoingWait {
-  readonly payload: MessagePayload;
+  readonly payload: TelegramDeliveryPayload | null;
+  readonly unit: TransferUnit | null;
+  readonly expectedCount: number;
   readonly expectedPeerKey: string;
   readonly baselineIds: ReadonlySet<string>;
   readonly resolve: (result: TelegramSendResult) => void;
@@ -49,7 +57,7 @@ export class TelegramSendAdapter {
 
   /** Verifies prepared content, clicks one scoped native Send control, and waits for data-mid. */
   public async sendPrepared(
-    payload: MessagePayload,
+    payload: TelegramDeliveryPayload,
     expectedPeerKey: string,
     signal: AbortSignal,
     onSendClicked: () => void,
@@ -66,8 +74,27 @@ export class TelegramSendAdapter {
       return control;
     }
 
+    return this.dispatchSend(control.button, payload, null, expectedPeerKey, signal, onSendClicked);
+  }
+
+  private async dispatchSend(
+    button: HTMLButtonElement,
+    payload: TelegramDeliveryPayload | null,
+    unit: TransferUnit | null,
+    expectedPeerKey: string,
+    signal: AbortSignal,
+    onSendClicked: () => void,
+  ): Promise<TelegramSendResult> {
     const baselineIds = this.captureOutgoingIds(expectedPeerKey);
-    const confirmation = this.armConfirmation(payload, expectedPeerKey, baselineIds, signal);
+    const expectedCount = unit?.delivery.outgoing.expectedCount ?? 1;
+    const confirmation = this.armConfirmation(
+      payload,
+      unit,
+      expectedCount,
+      expectedPeerKey,
+      baselineIds,
+      signal,
+    );
     const wait = this.readActiveWait();
     if (!wait) {
       return { status: "failed", message: "Не удалось запустить подтверждение отправки." };
@@ -78,7 +105,7 @@ export class TelegramSendAdapter {
       // conservative: if browser dispatch itself becomes ambiguous, retrying could duplicate.
       wait.sendClicked = true;
       onSendClicked();
-      control.button.click();
+      button.click();
       this.checkActiveWait();
     } catch (error) {
       wait.uncertaintyReason =
@@ -90,6 +117,29 @@ export class TelegramSendAdapter {
     }
 
     return confirmation;
+  }
+
+  /** Sends one generalized unit only when its preparation has a proven native adapter. */
+  public async sendPreparedUnit(
+    unit: TransferUnit,
+    expectedPeerKey: string,
+    signal: AbortSignal,
+    onSendClicked: () => void,
+  ): Promise<TelegramSendResult> {
+    const payload = toTelegramDeliveryPayloadUnit(unit);
+    if (payload) return this.sendPrepared(payload, expectedPeerKey, signal, onSendClicked);
+    if (signal.aborted) {
+      return { status: "failed", message: "Delivery was cancelled before Send." };
+    }
+    if (this.activeWait) {
+      return { status: "failed", message: "Another outgoing result is still being reconciled." };
+    }
+    if (unit.kind !== "file" && unit.kind !== "media-group") {
+      return { status: "failed", message: "Prepared unit has no proven native Send strategy." };
+    }
+    const control = this.findGeneralizedUploadSendControl(unit, expectedPeerKey);
+    if ("message" in control) return control;
+    return this.dispatchSend(control.button, null, unit, expectedPeerKey, signal, onSendClicked);
   }
 
   /** Rechecks outgoing-message confirmation through the application's shared observer. */
@@ -106,7 +156,7 @@ export class TelegramSendAdapter {
   }
 
   private findPreparedSendControl(
-    payload: MessagePayload,
+    payload: TelegramDeliveryPayload,
     expectedPeerKey: string,
   ): { readonly button: HTMLButtonElement } | { readonly status: "failed"; readonly message: string } {
     if (!isActivePeer(expectedPeerKey)) {
@@ -167,8 +217,50 @@ export class TelegramSendAdapter {
     return { button: buttons.item(0) };
   }
 
+  private findGeneralizedUploadSendControl(
+    unit: Extract<TransferUnit, { kind: "file" | "media-group" }>,
+    expectedPeerKey: string,
+  ): { readonly button: HTMLButtonElement } | { readonly status: "failed"; readonly message: string } {
+    const previews = document.querySelectorAll<HTMLElement>(ACTIVE_PREVIEW_SELECTOR);
+    if (previews.length !== 1 || !isActivePeer(expectedPeerKey)) {
+      return { status: "failed", message: "Expected peer-scoped upload preview is unavailable." };
+    }
+    const popup = previews.item(0);
+    const captionEditor = popup.querySelector<HTMLElement>(CAPTION_EDITOR_SELECTOR);
+    const expectedCaption = unit.kind === "file"
+      ? unit.item.caption?.text ?? ""
+      : unit.items[0]?.caption?.text ?? "";
+    if (!captionEditor || readTelegramText(captionEditor) !== normalizeText(expectedCaption)) {
+      return { status: "failed", message: "Upload caption changed before Send." };
+    }
+    const mediaCount = popup.querySelectorAll(PREVIEW_MEDIA_ITEM_SELECTOR).length;
+    const documentCount = popup.querySelectorAll(PREVIEW_DOCUMENT_ITEM_SELECTOR).length;
+    if (unit.kind === "file") {
+      const expectsDocument = unit.role === "document" || unit.role === "audio";
+      if ((expectsDocument ? documentCount : mediaCount) !== 1 || (expectsDocument ? mediaCount : documentCount) !== 0) {
+        return { status: "failed", message: "Native preview no longer matches the prepared file type." };
+      }
+    } else {
+      const albums = popup.querySelectorAll(PREVIEW_ALBUM_SELECTOR);
+      const groupedCount = Array.from(albums).reduce(
+        (count, album) => count + album.querySelectorAll(PREVIEW_MEDIA_ITEM_SELECTOR).length,
+        0,
+      );
+      if (albums.length !== unit.expectedGroups.length || groupedCount !== unit.items.length || documentCount !== 0) {
+        return { status: "failed", message: "Native preview no longer proves the expected album grouping." };
+      }
+    }
+    const buttons = popup.querySelectorAll<HTMLButtonElement>(PHOTO_SEND_BUTTON_SELECTOR);
+    if (buttons.length !== 1 || !this.isEnabled(buttons.item(0))) {
+      return { status: "failed", message: "Native Telegram upload Send control is unavailable." };
+    }
+    return { button: buttons.item(0) };
+  }
+
   private armConfirmation(
-    payload: MessagePayload,
+    payload: TelegramDeliveryPayload | null,
+    unit: TransferUnit | null,
+    expectedCount: number,
     expectedPeerKey: string,
     baselineIds: ReadonlySet<string>,
     signal: AbortSignal,
@@ -176,6 +268,8 @@ export class TelegramSendAdapter {
     return new Promise((resolve) => {
       const wait: OutgoingWait = {
         payload,
+        unit,
+        expectedCount,
         expectedPeerKey,
         baselineIds,
         resolve,
@@ -254,7 +348,7 @@ export class TelegramSendAdapter {
       const messageId = bubble.dataset.mid;
       return Boolean(messageId && !wait.baselineIds.has(messageId));
     });
-    if (newMessages.length > 1) {
+    if (newMessages.length > wait.expectedCount) {
       wait.finish({
         status: "unknown",
         message: "После одного Send появилось несколько исходящих сообщений; batch остановлен.",
@@ -262,29 +356,36 @@ export class TelegramSendAdapter {
       return;
     }
 
-    const message = newMessages[0];
-    const messageId = message?.dataset.mid;
-    if (
-      message &&
-      messageId &&
-      this.matchesPayloadWhenObservable(message, wait.payload) !== false &&
-      !message.matches(PENDING_MESSAGE_SELECTOR) &&
-      !message.querySelector(PENDING_MESSAGE_SELECTOR)
-    ) {
-      wait.finish({ status: "sent", messageId });
+    if (newMessages.length !== wait.expectedCount) return;
+    const messageIds = newMessages
+      .map((message) => message.dataset.mid)
+      .filter((messageId): messageId is string => Boolean(messageId));
+    const allTerminal = newMessages.every(
+      (message) => !message.matches(PENDING_MESSAGE_SELECTOR) && !message.querySelector(PENDING_MESSAGE_SELECTOR),
+    );
+    const payloadMatches = wait.payload
+      ? this.matchesPayloadWhenObservable(newMessages[0]!, wait.payload)
+      : true;
+    const groupMatches = wait.unit?.kind !== "media-group" || this.hasOneOutgoingGroup(newMessages);
+    if (messageIds.length === wait.expectedCount && allTerminal && payloadMatches && groupMatches) {
+      wait.finish({
+        status: "sent",
+        messageId: messageIds[0]!,
+        ...(wait.unit?.kind === "media-group" ? { messageIds } : {}),
+      });
     }
   }
 
   private matchesPayloadWhenObservable(
     bubble: HTMLElement,
-    payload: MessagePayload,
-  ): boolean | null {
+    payload: TelegramDeliveryPayload,
+  ): boolean {
     if (payload.kind !== "text") {
-      return null;
+      return true;
     }
     const message = bubble.querySelector<HTMLElement>(MESSAGE_TEXT_SELECTOR);
     if (!message) {
-      return null;
+      return false;
     }
     const observed = readTelegramText(message, {
       ignoredSelectors: [MESSAGE_TIME_SELECTOR, MESSAGE_LAYOUT_FIX_SELECTOR],
@@ -303,8 +404,13 @@ export class TelegramSendAdapter {
   private findOutgoingBubbles(peerKey: string): HTMLElement[] {
     // Exact attribute comparison avoids interpolating Telegram's opaque peer key into CSS.
     return Array.from(document.querySelectorAll<HTMLElement>(OUTGOING_BUBBLE_SELECTOR)).filter(
-      (bubble) => bubble.dataset.peerId === peerKey,
+      (bubble) => (bubble.dataset.peerId ?? bubble.closest<HTMLElement>(".bubble.is-out")?.dataset.peerId) === peerKey,
     );
+  }
+
+  private hasOneOutgoingGroup(messages: readonly HTMLElement[]): boolean {
+    const containers = new Set(messages.map((message) => message.closest(".bubble.is-out")));
+    return !containers.has(null) && containers.size === 1;
   }
 
   private isEnabled(button: HTMLButtonElement): boolean {

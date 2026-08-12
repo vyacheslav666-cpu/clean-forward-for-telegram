@@ -7,7 +7,7 @@ import type { RecipientSourceAdapter } from "../../src/recipient/RecipientSource
 import type { ComposerAdapter } from "../../src/telegram/ComposerAdapter";
 import type { TelegramChatNavigator } from "../../src/telegram/TelegramChatNavigator";
 import type { RecipientPicker, RecipientPickerActions } from "../../src/ui/RecipientPicker";
-import { createLogger } from "../helpers";
+import { createLogger, createTextMessagePayload } from "../helpers";
 
 const first: Recipient = { peerKey: "101", title: "First", supported: true };
 const second: Recipient = { peerKey: "202", title: "Second", supported: true };
@@ -15,7 +15,7 @@ const second: Recipient = { peerKey: "202", title: "Second", supported: true };
 describe("automatic recipient-controller wiring", () => {
   it("hands one ordered snapshot to delivery and blocks a double Next", async () => {
     const pending = new PendingTransfer();
-    pending.select({ kind: "text", text: "payload" });
+    pending.select(createTextMessagePayload("payload", first.peerKey));
     let actions: RecipientPickerActions | null = null;
     const picker = {
       showLoading: vi.fn((next: RecipientPickerActions) => { actions = next; }),

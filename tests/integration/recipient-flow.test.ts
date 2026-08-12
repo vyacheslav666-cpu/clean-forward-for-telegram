@@ -1,25 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
-import type { MessagePayload } from "../../src/domain/MessagePayload";
 import { PendingTransfer } from "../../src/domain/PendingTransfer";
+import type { TelegramDeliveryPayload } from "../../src/domain/TelegramDeliveryPayload";
 import type { Recipient } from "../../src/recipient/Recipient";
 import { RecipientPickerController } from "../../src/recipient/RecipientPickerController";
 import type { RecipientSourceAdapter } from "../../src/recipient/RecipientSourceAdapter";
 import type { ComposerAdapter } from "../../src/telegram/ComposerAdapter";
 import type { ChatNavigationResult, TelegramChatNavigator } from "../../src/telegram/TelegramChatNavigator";
 import { RecipientPicker, type RecipientPickerActions } from "../../src/ui/RecipientPicker";
-import { createLogger } from "../helpers";
+import { createLogger, createMessagePayloadFixture, createTextMessagePayload } from "../helpers";
 
 const first: Recipient = { peerKey: "101", title: "Fixture recipient A", supported: true };
 const second: Recipient = { peerKey: "202", title: "Fixture recipient B", supported: true };
 
 function createFlow(options: {
-  payload?: MessagePayload;
+  payload?: TelegramDeliveryPayload;
   navigate?: (recipient: Readonly<Recipient>, signal: AbortSignal) => Promise<ChatNavigationResult>;
-  insert?: (payload: MessagePayload, peerKey: string) => Promise<{ success: boolean; message: string }>;
+  insert?: (payload: TelegramDeliveryPayload, peerKey: string) => Promise<{ success: boolean; message: string }>;
 } = {}) {
   const pending = new PendingTransfer();
   const payload = options.payload ?? { kind: "text", text: "fixture-text" };
-  pending.select(payload);
+  const sourcePayload = createMessagePayloadFixture(payload);
+  pending.select(sourcePayload);
   let actions: RecipientPickerActions | null = null;
   const picker = {
     showLoading: vi.fn((nextActions: RecipientPickerActions) => { actions = nextActions; }),
@@ -55,7 +56,7 @@ function createFlow(options: {
     if (!actions) throw new Error("Picker actions are unavailable");
     return actions;
   };
-  return { controller, pending, payload, picker, navigator, composer, currentActions };
+  return { controller, pending, payload, sourcePayload, picker, navigator, composer, currentActions };
 }
 
 async function selectAndConfirm(
@@ -78,7 +79,7 @@ describe("recipient flow integration through adapter boundaries", () => {
   });
 
   it("passes a photo and caption unchanged to the existing preview pipeline", async () => {
-    const payload: MessagePayload = {
+    const payload: TelegramDeliveryPayload = {
       kind: "image",
       image: new Blob(["photo"], { type: "image/jpeg" }),
       fileName: "photo.jpg",
@@ -99,7 +100,7 @@ describe("recipient flow integration through adapter boundaries", () => {
 
   it("routes Escape through the same controller cancellation", async () => {
     const pending = new PendingTransfer();
-    pending.select({ kind: "text", text: "fixture-escape" });
+    pending.select(createTextMessagePayload("fixture-escape"));
     const picker = new RecipientPicker();
     const source: RecipientSourceAdapter = {
       listLoadedRecipients: vi.fn(async () => [first]),
@@ -124,12 +125,54 @@ describe("recipient flow integration through adapter boundaries", () => {
     expect(picker.isVisible()).toBe(false);
   });
 
+  it("consumes picker Escape before Telegram can navigate the chat", async () => {
+    const pending = new PendingTransfer();
+    pending.select(createTextMessagePayload("fixture-escape-propagation"));
+    const picker = new RecipientPicker();
+    const source: RecipientSourceAdapter = {
+      listLoadedRecipients: vi.fn(async () => [first]),
+      searchRecipients: vi.fn(),
+      clearSearch: vi.fn(),
+    };
+    const controller = new RecipientPickerController(
+      source,
+      { cancel: vi.fn(), notifyDomChanged: vi.fn() } as unknown as TelegramChatNavigator,
+      picker,
+      {} as ComposerAdapter,
+      pending,
+      createLogger(),
+    );
+    await controller.open();
+    const telegramKeydown = vi.fn();
+    const telegramKeyup = vi.fn();
+    window.addEventListener("keydown", telegramKeydown, true);
+    window.addEventListener("keyup", telegramKeyup, true);
+    try {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }));
+      window.dispatchEvent(new KeyboardEvent("keyup", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }));
+    } finally {
+      window.removeEventListener("keydown", telegramKeydown, true);
+      window.removeEventListener("keyup", telegramKeyup, true);
+    }
+    expect(telegramKeydown).not.toHaveBeenCalled();
+    expect(telegramKeyup).not.toHaveBeenCalled();
+    expect(picker.isVisible()).toBe(false);
+  });
+
   it("stops after a navigation error and preserves payload", async () => {
     const flow = createFlow({ navigate: async () => ({ success: false, message: "navigation failed" }) });
     await selectAndConfirm(flow);
     await vi.waitFor(() => expect(flow.picker.show).toHaveBeenCalledTimes(2));
     expect(flow.composer.insert).not.toHaveBeenCalled();
-    expect(flow.pending.peek()).toBe(flow.payload);
+    expect(flow.pending.peek()).toBe(flow.sourcePayload);
   });
 
   it("does not call composer when navigation reports a non-empty composer", async () => {
@@ -146,7 +189,7 @@ describe("recipient flow integration through adapter boundaries", () => {
     const flow = createFlow({ insert: async () => ({ success: false, message: "preview failed" }) });
     await selectAndConfirm(flow);
     await vi.waitFor(() => expect(flow.composer.cancelPreparedPreview).toHaveBeenCalledOnce());
-    expect(flow.pending.peek()).toBe(flow.payload);
+    expect(flow.pending.peek()).toBe(flow.sourcePayload);
   });
 
   it("allows a successful retry after a recoverable error", async () => {

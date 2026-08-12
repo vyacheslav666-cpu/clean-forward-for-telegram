@@ -256,6 +256,7 @@ describe("TelegramRecipientSourceAdapter", () => {
     await vi.waitFor(() =>
       expect(updates[updates.length - 1]?.map((item) => item.peerKey)).toEqual(["99"]),
     );
+    expect(updates[updates.length - 1]?.[0]?.searchQuery).toBe("Remote fixture");
     appendSearchRow(nativeSearch.results, "100", "Later remote fixture");
     await vi.waitFor(() =>
       expect(updates[updates.length - 1]?.map((item) => item.peerKey)).toEqual(["99", "100"]),
@@ -295,6 +296,23 @@ describe("TelegramRecipientSourceAdapter", () => {
     adapter.clearSearch();
     expect(main.classList.contains("is-search-active")).toBe(false);
     expect(document.querySelector<HTMLInputElement>(".input-search-input")?.value).toBe("");
+  });
+
+  it("does not settle search cleanup before Telegram's destruction window", async () => {
+    vi.useFakeTimers();
+    installNativeSearch(() => undefined);
+    const adapter = new TelegramRecipientSourceAdapter();
+    adapter.searchRecipients("remote", new AbortController().signal, () => undefined);
+    adapter.clearSearch();
+    let settled = false;
+    const settlement = adapter.waitForSearchSettled(new AbortController().signal)
+      .then(() => { settled = true; });
+
+    await vi.advanceTimersByTimeAsync(175);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(25);
+    await settlement;
+    expect(settled).toBe(true);
   });
 
   it("finds Saved Messages through native search by its stable self peer key", async () => {

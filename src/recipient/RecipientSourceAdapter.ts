@@ -18,4 +18,7 @@ export interface RecipientSourceAdapter {
 
   /** Restores the native Telegram search state used by the current picker session. */
   clearSearch(): void;
+
+  /** Waits until Telegram has acknowledged the latest search open/close transition. */
+  waitForSearchSettled?(signal: AbortSignal): Promise<void>;
 }

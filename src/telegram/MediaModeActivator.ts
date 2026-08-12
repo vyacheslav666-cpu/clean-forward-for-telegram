@@ -14,7 +14,10 @@ const MENU_ITEM_SELECTOR = ".btn-menu-item";
 const MENU_ITEM_TEXT_SELECTOR = ".btn-menu-item-text";
 const MENU_OVERLAY_SELECTOR = ".btn-menu-overlay";
 const ACTIVE_MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
-const VERIFIED_MEDIA_MENU_LABEL = "Photo or Video";
+const VERIFIED_MENU_LABELS = Object.freeze({
+  media: "Photo or Video",
+  document: "Document",
+});
 const MEDIA_MODE_TIMEOUT_MS = 2_000;
 
 /** File input armed by Telegram for media attachment in one captured destination chat. */
@@ -23,12 +26,15 @@ export interface ArmedMediaInput {
   readonly peerId: string;
 }
 
+/** Native attachment branch proven from the current Telegram Web K menu. */
+export type AttachmentMode = keyof typeof VERIFIED_MENU_LABELS;
+
 /** Uses Telegram's own attachment action to set the internal willAttachType to media. */
 export class MediaModeActivator {
   /**
    * Arms the active composer and suppresses only the native picker opened by Telegram afterward.
    */
-  public async arm(): Promise<ArmedMediaInput> {
+  public async arm(mode: AttachmentMode = "media"): Promise<ArmedMediaInput> {
     const context = findActiveComposerContext();
     if (!context) {
       throw new TelegramIntegrationError(
@@ -71,13 +77,13 @@ export class MediaModeActivator {
 
     const fileInput = fileInputs.item(0);
     const attachmentButton = attachmentButtons.item(0);
-    let mediaItem = this.findVerifiedMediaItem();
+    let mediaItem = this.findVerifiedItem(mode);
 
     if (!mediaItem) {
       attachmentButton.click();
       try {
         mediaItem = await waitForCondition(
-          () => this.findVerifiedMediaItem(),
+          () => this.findVerifiedItem(mode),
           MEDIA_MODE_TIMEOUT_MS,
           "Telegram не открыл меню вложений.",
         );
@@ -122,7 +128,11 @@ export class MediaModeActivator {
       );
     }
 
-    if (!fileInput.accept.split(",").some((mimeType) => mimeType.trim().startsWith("image/"))) {
+    const mediaAcceptsBinary = fileInput.accept
+      .split(",")
+      .some((mimeType) => /^(image|video)\//.test(mimeType.trim()));
+    const modeMatches = mode === "media" ? mediaAcceptsBinary : fileInput.accept.trim() === "";
+    if (!modeMatches) {
       throw new TelegramIntegrationError(
         "media-mode-unavailable",
         "Telegram открыл не media-режим вложения.",
@@ -132,12 +142,12 @@ export class MediaModeActivator {
     return { fileInput, peerId: context.peerId };
   }
 
-  private findVerifiedMediaItem(): HTMLElement | null {
+  private findVerifiedItem(mode: AttachmentMode): HTMLElement | null {
     const matches: HTMLElement[] = [];
     for (const menu of document.querySelectorAll<HTMLElement>(ACTIVE_MENU_SELECTOR)) {
       for (const item of menu.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR)) {
         const label = item.querySelector<HTMLElement>(MENU_ITEM_TEXT_SELECTOR)?.textContent?.trim();
-        if (label === VERIFIED_MEDIA_MENU_LABEL) {
+        if (label === VERIFIED_MENU_LABELS[mode]) {
           matches.push(item);
         }
       }

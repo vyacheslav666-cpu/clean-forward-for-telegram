@@ -1,14 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ImageMessagePayload } from "../../src/domain/MessagePayload";
+import type { ImageDeliveryPayload } from "../../src/domain/TelegramDeliveryPayload";
+import type { MediaGroupTransferUnit } from "../../src/domain/TransferUnit";
 import { TelegramSendAdapter } from "../../src/telegram/TelegramSendAdapter";
 import { observeDom } from "../../src/utils/observeDom";
 import { installComposer } from "../helpers";
 
-function appendOutgoing(peerKey: string, messageId: string, pending = false): HTMLElement {
+function appendOutgoing(
+  peerKey: string,
+  messageId: string,
+  pending = false,
+  text = "fixture-text",
+): HTMLElement {
   const bubble = document.createElement("div");
   bubble.className = `bubble is-out${pending ? " sending" : ""}`;
   bubble.dataset.peerId = peerKey;
   bubble.dataset.mid = messageId;
+  const message = document.createElement("span");
+  message.className = "message";
+  message.textContent = text;
+  bubble.append(message);
   document.body.append(bubble);
   return bubble;
 }
@@ -46,6 +56,45 @@ function installPhotoSend(peerKey: string, caption = "") {
   return { popup, editor, button };
 }
 
+function installAlbumSend(peerKey: string) {
+  installComposer(peerKey);
+  const popup = document.createElement("div");
+  popup.className = "popup-send-photo popup-new-media active";
+  const album = document.createElement("div");
+  album.className = "popup-item-album";
+  for (let index = 0; index < 2; index += 1) {
+    const item = document.createElement("div");
+    item.className = "popup-item popup-item-media";
+    album.append(item);
+  }
+  const editor = document.createElement("div");
+  editor.className = "simple-message-input-input";
+  editor.setAttribute("contenteditable", "true");
+  const button = document.createElement("button");
+  button.className = "simple-message-input-confirm";
+  popup.append(album, editor, button);
+  document.body.append(popup);
+  return { button };
+}
+
+function albumUnitFixture(): MediaGroupTransferUnit {
+  return {
+    kind: "media-group",
+    groupedId: "group-1",
+    source: [{ resolution: "telegram-model", sourcePeerKey: "8", mid: 1, groupedId: "group-1", date: 1, order: 0 }],
+    items: [{ order: 0 }, { order: 1 }] as unknown as MediaGroupTransferUnit["items"],
+    expectedGroups: [{ groupIndex: 0, itemOrders: [0, 1] }],
+    delivery: {
+      prepareCapability: "album-upload",
+      sendClickCount: 1,
+      atomicity: "album",
+      outgoing: { kind: "media-groups", expectedCount: 2, groups: [{ groupIndex: 0, itemOrders: [0, 1] }] },
+      contentFingerprint: "album-fixture",
+      limits: { maxBinaryBytes: 1, preparationTimeoutMs: 1 },
+    },
+  };
+}
+
 describe("TelegramSendAdapter", () => {
   it("clicks native text Send once and confirms a new outgoing data-mid", async () => {
     const { button } = installTextSend("8", "fixture-text");
@@ -71,7 +120,7 @@ describe("TelegramSendAdapter", () => {
     const { button } = installPhotoSend("8", caption);
     const click = vi.spyOn(button, "click");
     button.addEventListener("click", () => appendOutgoing("8", `mid-${caption || "photo"}`));
-    const payload: ImageMessagePayload = {
+    const payload: ImageDeliveryPayload = {
       kind: "image",
       image: new Blob(["photo"]),
       fileName: "photo.jpg",
@@ -85,6 +134,41 @@ describe("TelegramSendAdapter", () => {
     );
     expect(click).toHaveBeenCalledOnce();
     expect(result.status).toBe("sent");
+  });
+
+  it("waits for every new grouped data-mid before confirming one album Send", async () => {
+    const { button } = installAlbumSend("8");
+    const adapter = new TelegramSendAdapter();
+    let group: HTMLElement | null = null;
+    button.addEventListener("click", () => {
+      group = document.createElement("div");
+      group.className = "bubble is-out";
+      group.dataset.peerId = "8";
+      const first = document.createElement("div");
+      first.className = "grouped-item";
+      first.dataset.mid = "album-mid-1";
+      group.append(first);
+      document.body.append(group);
+    });
+    let settled = false;
+    const sending = adapter.sendPreparedUnit(
+      albumUnitFixture(),
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    ).then((result) => { settled = true; return result; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    const second = document.createElement("div");
+    second.className = "grouped-item";
+    second.dataset.mid = "album-mid-2";
+    group!.append(second);
+    adapter.notifyDomChanged();
+    await expect(sending).resolves.toEqual({
+      status: "sent",
+      messageId: "album-mid-1",
+      messageIds: ["album-mid-1", "album-mid-2"],
+    });
   });
 
   it("does not advance success while the new outgoing bubble is still sending", async () => {
@@ -141,6 +225,10 @@ describe("TelegramSendAdapter", () => {
       bubble = document.createElement("div");
       bubble.className = "bubble is-out";
       bubble.dataset.peerId = "8";
+      const message = document.createElement("span");
+      message.className = "message";
+      message.textContent = "fixture-text";
+      bubble.append(message);
       document.body.append(bubble);
     });
 
@@ -310,11 +398,7 @@ describe("TelegramSendAdapter", () => {
     const { button } = installTextSend("8", "fixture-text");
     const click = vi.spyOn(button, "click");
     button.addEventListener("click", () => {
-      const bubble = appendOutgoing("8", "unrelated-mid");
-      const message = document.createElement("span");
-      message.className = "message";
-      message.textContent = "different text";
-      bubble.append(message);
+      appendOutgoing("8", "unrelated-mid", false, "different text");
     });
     const sending = new TelegramSendAdapter().sendPrepared(
       { kind: "text", text: "fixture-text" },
@@ -327,5 +411,23 @@ describe("TelegramSendAdapter", () => {
 
     expect((await sending).status).toBe("unknown");
     expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("does not confirm an unrelated outgoing without observable text", async () => {
+    vi.useFakeTimers();
+    const { button } = installTextSend("8", "fixture-text");
+    button.addEventListener("click", () => {
+      const bubble = appendOutgoing("8", "sticker-like-mid");
+      bubble.querySelector(".message")?.remove();
+    });
+    const sending = new TelegramSendAdapter().sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    );
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect((await sending).status).toBe("unknown");
   });
 });

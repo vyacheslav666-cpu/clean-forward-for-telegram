@@ -4,6 +4,12 @@ import type { RecipientPickerController } from "../recipient/RecipientPickerCont
 import type { ContextMenuIntegration } from "../telegram/TelegramContextMenuIntegration";
 import type { MessageExtractor } from "../telegram/MessageExtractor";
 import type { TelegramDomAdapter } from "../telegram/TelegramDomAdapter";
+import type {
+  TelegramSelectionContext,
+  TelegramSelectionDomAdapter,
+} from "../telegram/TelegramSelectionDomAdapter";
+import type { TelegramSelectionIntegration } from "../telegram/TelegramSelectionIntegration";
+import type { TelegramSourceSnapshot } from "../telegram/TelegramSourceSnapshot";
 import type { Logger } from "../utils/logger";
 import { observeDom, type DomObservation } from "../utils/observeDom";
 
@@ -11,12 +17,18 @@ import { observeDom, type DomObservation } from "../utils/observeDom";
 export class CleanForwardController {
   private observation: DomObservation | null = null;
   private reconciliationQueued = false;
+  private captureSession: {
+    readonly controller: AbortController;
+    readonly selectionContext: TelegramSelectionContext | null;
+  } | null = null;
 
   public constructor(
     private readonly dom: TelegramDomAdapter,
     private readonly extractor: MessageExtractor,
     private readonly pending: PendingTransfer,
     private readonly contextMenu: ContextMenuIntegration,
+    private readonly selectionDom: TelegramSelectionDomAdapter,
+    private readonly selectionIntegration: TelegramSelectionIntegration,
     private readonly recipients: RecipientPickerController,
     private readonly log: Logger,
   ) {}
@@ -30,6 +42,7 @@ export class CleanForwardController {
     this.dom.startTrackingContextTargets(() => this.scheduleReconciliation());
     this.observation = observeDom(document.documentElement, () => this.handleDomChanged());
     this.reconcileContextMenu();
+    this.reconcileSelectionToolbar();
     this.log.info("Userscript инициализирован.");
   }
 
@@ -38,6 +51,8 @@ export class CleanForwardController {
     this.observation?.disconnect();
     this.observation = null;
     this.dom.stopTrackingContextTargets();
+    this.captureSession?.controller.abort();
+    this.captureSession = null;
     this.recipients.stop();
     this.pending.clear();
   }
@@ -56,7 +71,14 @@ export class CleanForwardController {
 
   /** Shares the one MutationObserver between menu reconciliation and recipient navigation. */
   private handleDomChanged(): void {
+    const selectionContext = this.captureSession?.selectionContext;
+    if (selectionContext && !this.selectionDom.isContextActive(selectionContext)) {
+      // Exiting Telegram selection invalidates the capture intent even though detached snapshots
+      // themselves remain safe; opening the picker after an explicit user cancel would be wrong.
+      this.captureSession?.controller.abort();
+    }
     this.reconcileContextMenu();
+    this.reconcileSelectionToolbar();
     this.recipients.notifyDomChanged();
   }
 
@@ -68,34 +90,85 @@ export class CleanForwardController {
     }
 
     this.contextMenu.ensureAction(context.menu, () => {
+      const snapshot = this.dom.readMessageSnapshot(context.message);
       this.log.info("CleanForwardController получил выбор контекстного пункта.", {
         messageConnected: context.message.isConnected,
+        snapshotFound: Boolean(snapshot),
       });
       context.dismiss();
-      void this.captureMessage(context.message);
+      if (snapshot) {
+        void this.captureSnapshots([snapshot], null);
+      }
     });
   }
 
-  /** Extracts one supported payload before exposing any recipient choice. */
-  private async captureMessage(message: HTMLElement): Promise<void> {
-    this.log.info("CleanForwardController запускает извлечение payload.", {
-      messageConnected: message.isConnected,
+  /** Reconciles the action only for Telegram's verified normal-chat selection toolbar. */
+  private reconcileSelectionToolbar(): void {
+    const context = this.selectionDom.findActiveContext();
+    if (!context) {
+      return;
+    }
+    this.selectionIntegration.ensureAction(context, () => {
+      const selected = this.selectionDom.readSelectedSnapshots(context);
+      if (selected.kind === "rejected") {
+        return;
+      }
+      void this.captureSnapshots(selected.snapshots, context);
+    });
+  }
+
+  /** Completes one atomic bundle before dismissing source UI or opening recipient selection. */
+  private async captureSnapshots(
+    snapshots: readonly TelegramSourceSnapshot[],
+    selectionContext: TelegramSelectionContext | null,
+  ): Promise<void> {
+    if (this.captureSession) {
+      this.log.warn("Повторный source capture отклонён: предыдущий snapshot ещё формируется.");
+      return;
+    }
+    const session = {
+      controller: new AbortController(),
+      selectionContext,
+    };
+    this.captureSession = session;
+    this.log.info("CleanForwardController запускает atomic source capture.", {
+      messageCount: snapshots.length,
+      mode: selectionContext ? "native-selection" : "context-menu",
     });
     try {
-      const payload = await this.extractor.extract(message);
-      if (!payload) {
-        this.log.warn("Сообщение не выбрано: DOM не распознан или формат не поддерживается.");
+      const result = await this.extractor.captureSnapshots(snapshots, session.controller.signal);
+      if (session.controller.signal.aborted || this.captureSession !== session) {
+        return;
+      }
+      if (result.kind !== "captured") {
+        this.log.warn("Source capture остановлен до recipient picker.", result.reason);
         return;
       }
 
-      if (!this.pending.select(payload)) {
+      if (!this.pending.select(result.payload)) {
         this.log.warn("Новая операция отклонена: предыдущая вставка ещё выполняется.");
         return;
       }
-      this.log.info("Сообщение временно сохранено в памяти.");
+      // Ownership moves to PendingTransfer before Telegram selection is dismissed. Clearing the
+      // session first prevents the resulting DOM transition from aborting an accepted bundle.
+      this.captureSession = null;
+      if (selectionContext && !this.selectionDom.dismiss(selectionContext)) {
+        this.pending.clear();
+        this.log.warn("Native selection не закрыт; recipient picker не будет открыт.");
+        return;
+      }
+      this.log.info("Immutable source bundle временно сохранён в памяти.");
       await this.recipients.open();
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        this.log.info("Source capture отменён до создания bundle.");
+        return;
+      }
       this.log.error("Необработанная ошибка извлечения payload.", error);
+    } finally {
+      if (this.captureSession === session) {
+        this.captureSession = null;
+      }
     }
   }
 }

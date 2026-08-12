@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ImageMessagePayload } from "../../src/domain/MessagePayload";
+import type { ImageDeliveryPayload } from "../../src/domain/TelegramDeliveryPayload";
+import { createSourceMessageDescriptor } from "../../src/domain/SourceMessageDescriptor";
+import { createBinaryMediaContent, createTransferMediaItem } from "../../src/domain/TransferableContent";
+import { createFileTransferUnit, createMediaGroupTransferUnit } from "../../src/domain/TransferUnit";
 import { ComposerAdapter } from "../../src/telegram/ComposerAdapter";
 import type { ArmedMediaInput, MediaModeActivator } from "../../src/telegram/MediaModeActivator";
 import { TelegramDomAdapter } from "../../src/telegram/TelegramDomAdapter";
@@ -8,7 +11,7 @@ import { UploadPreviewAdapter } from "../../src/telegram/UploadPreviewAdapter";
 import { readTelegramText } from "../../src/telegram/readTelegramText";
 import { createLogger, installComposer } from "../helpers";
 
-function imagePayload(caption?: string): ImageMessagePayload {
+function imagePayload(caption?: string): ImageDeliveryPayload {
   return {
     kind: "image",
     image: new Blob(["png bytes"], { type: "image/png" }),
@@ -37,13 +40,31 @@ function mockImagePipeline(overrides: {
   } as unknown as MediaModeActivator;
   const preview = {
     selectFile: vi.fn(),
+    selectFiles: vi.fn(),
     waitUntilReady: vi.fn(overrides.waitUntilReady ?? (async () => session)),
+    waitUntilReadyForUnit: vi.fn(overrides.waitUntilReady ?? (async () => session)),
     insertCaption: vi.fn(async () => undefined),
     hasActivePreview: vi.fn(overrides.hasActivePreview ?? (() => false)),
     cancelActivePreview: vi.fn(overrides.cancelActivePreview ?? (async () => true)),
   } as unknown as UploadPreviewAdapterType;
   const dom = { insertTextIntoComposer: vi.fn(() => true) } as unknown as TelegramDomAdapter;
   return { adapter: new ComposerAdapter(dom, mediaMode, preview), mediaMode, preview, target };
+}
+
+function mediaItem(order: number, kind: "photo" | "video" | "document") {
+  return createTransferMediaItem({
+    order,
+    media: createBinaryMediaContent({
+      blob: new Blob([`bytes-${order}`], { type: kind === "document" ? "application/pdf" : `${kind}/mp4` }),
+      fileName: `file-${order}.${kind === "document" ? "pdf" : "mp4"}`,
+      contentFingerprint: `fixture-${order}`,
+      metadata: kind === "photo"
+        ? { kind: "photo", width: 1, height: 1 }
+        : kind === "video"
+          ? { kind: "video", width: 1, height: 1, durationSeconds: 1, supportsStreaming: true }
+          : { kind: "document" },
+    }),
+  });
 }
 
 describe("ComposerAdapter", () => {
@@ -71,6 +92,42 @@ describe("ComposerAdapter", () => {
     expect(selectedFile).toBeInstanceOf(File);
     expect(selectedFile?.type).toBe("image/png");
     expect(selectedFile?.name).toBe("telegram-source.png");
+  });
+
+  it("prepares a document through Telegram's verified Document branch", async () => {
+    const { adapter, mediaMode, preview } = mockImagePipeline();
+    const source = createSourceMessageDescriptor({
+      resolution: "telegram-model", sourcePeerKey: "8", mid: 1, date: 1, order: 0,
+    });
+    const unit = createFileTransferUnit({ source: [source], role: "document", item: mediaItem(0, "document") });
+
+    const result = await adapter.prepareUnit(unit, "8");
+
+    expect(result.success).toBe(true);
+    expect(mediaMode.arm).toHaveBeenCalledWith("document");
+    expect(preview.selectFiles).toHaveBeenCalledWith(expect.anything(), [expect.any(File)]);
+    expect(preview.waitUntilReadyForUnit).toHaveBeenCalledWith("8", unit);
+  });
+
+  it("prepares one album as one ordered multi-file native preview", async () => {
+    const { adapter, mediaMode, preview } = mockImagePipeline();
+    const source = [0, 1].map((order) => createSourceMessageDescriptor({
+      resolution: "telegram-model", sourcePeerKey: "8", mid: order + 1,
+      groupedId: "group", date: order + 1, order,
+    }));
+    const unit = createMediaGroupTransferUnit({
+      source,
+      groupedId: "group",
+      items: [mediaItem(0, "photo"), mediaItem(1, "video")],
+      expectedGroups: [{ groupIndex: 0, itemOrders: [0, 1] }],
+    });
+
+    const result = await adapter.prepareUnit(unit, "8");
+
+    expect(result.success).toBe(true);
+    expect(mediaMode.arm).toHaveBeenCalledWith("media");
+    const selected = vi.mocked(preview.selectFiles).mock.calls[0]?.[1] as readonly File[];
+    expect(selected.map((file) => file.name)).toEqual(["file-0.mp4", "file-1.mp4"]);
   });
 
   it("dispatches one bubbling change event after assigning the file", () => {
@@ -174,6 +231,25 @@ describe("ComposerAdapter", () => {
     await vi.advanceTimersByTimeAsync(4_999);
     expect(rejected).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
+    await rejection;
+  });
+
+  it("fails before Send when Telegram replaces the owned upload preview during readiness", async () => {
+    vi.useFakeTimers();
+    installComposer("8");
+    const popup = document.createElement("div");
+    popup.className = "popup-send-photo popup-new-media active";
+    document.body.append(popup);
+    const waiting = new UploadPreviewAdapter().waitUntilReady("8");
+    await vi.advanceTimersByTimeAsync(32);
+
+    popup.remove();
+    const replacement = document.createElement("div");
+    replacement.className = "popup-send-photo popup-new-media active";
+    document.body.append(replacement);
+    const rejection = expect(waiting).rejects.toMatchObject({ code: "preview-cancelled" });
+    await vi.advanceTimersByTimeAsync(32);
+
     await rejection;
   });
 
