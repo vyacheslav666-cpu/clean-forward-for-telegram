@@ -1,5 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { PendingTransfer } from "../../src/domain/PendingTransfer";
+import {
+  createMessagePayload,
+  type MessagePayload,
+} from "../../src/domain/MessagePayload";
+import {
+  createSourceChatDescriptor,
+  createSourceMessageDescriptor,
+} from "../../src/domain/SourceMessageDescriptor";
+import { createPlainTextContent } from "../../src/domain/TransferableContent";
+import { createTextTransferUnit } from "../../src/domain/TransferUnit";
+import type { DeliveryCoordinator } from "../../src/delivery/DeliveryCoordinator";
 import type { Recipient } from "../../src/recipient/Recipient";
 import { RecipientPickerController } from "../../src/recipient/RecipientPickerController";
 import type { RecipientSourceAdapter } from "../../src/recipient/RecipientSourceAdapter";
@@ -9,6 +20,23 @@ import { RecipientPicker, type RecipientPickerActions } from "../../src/ui/Recip
 import { createLogger, createTextMessagePayload } from "../helpers";
 
 const recipient: Recipient = { peerKey: "7", title: "Fixture recipient", supported: true };
+
+function payloadWithSourceLocator(): MessagePayload {
+  const source = createSourceChatDescriptor("42", "Immutable source", "@immutable_source");
+  const message = createSourceMessageDescriptor({
+    resolution: "telegram-model",
+    sourcePeerKey: source.peerKey,
+    mid: 1,
+    date: 1,
+    order: 0,
+  });
+  return createMessagePayload({
+    operationId: "immutable-source-picker",
+    source,
+    messages: [message],
+    units: [createTextTransferUnit([message], createPlainTextContent("fixture"))],
+  });
+}
 
 function createController(picker: RecipientPicker, pending: PendingTransfer) {
   const source: RecipientSourceAdapter = {
@@ -29,6 +57,93 @@ function createController(picker: RecipientPicker, pending: PendingTransfer) {
 }
 
 describe("RecipientPickerController", () => {
+  it("hands delivery only the immutable payload source locator, never a late DOM title/query", async () => {
+    const pending = new PendingTransfer();
+    pending.select(payloadWithSourceLocator());
+    let actions: RecipientPickerActions | null = null;
+    const picker = {
+      showLoading: vi.fn((value: RecipientPickerActions) => { actions = value; }),
+      show: vi.fn((_items, value: RecipientPickerActions) => { actions = value; }),
+      hide: vi.fn(),
+      updateSelection: vi.fn(),
+      setError: vi.fn(),
+    } as unknown as RecipientPicker;
+    const source: RecipientSourceAdapter = {
+      getActiveRecipient: vi.fn(() => ({
+        peerKey: "42",
+        title: "Wrong late title",
+        searchQuery: "@wrong_late_query",
+        supported: true,
+      })),
+      listLoadedRecipients: vi.fn(async () => [recipient]),
+      searchRecipients: vi.fn(),
+      clearSearch: vi.fn(),
+    };
+    const delivery = {
+      start: vi.fn(() => Promise.resolve({})),
+      notifyDomChanged: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as DeliveryCoordinator;
+    const controller = new RecipientPickerController(
+      source,
+      { cancel: vi.fn(), notifyDomChanged: vi.fn() } as unknown as TelegramChatNavigator,
+      picker,
+      {} as ComposerAdapter,
+      pending,
+      createLogger(),
+      delivery,
+    );
+
+    await controller.open();
+    actions!.onToggle?.(recipient);
+    actions!.onNext();
+
+    expect(delivery.start).toHaveBeenCalledWith(
+      [expect.objectContaining({ peerKey: recipient.peerKey })],
+      {
+        peerKey: "42",
+        title: "Immutable source",
+        searchQuery: "@immutable_source",
+        supported: true,
+      },
+    );
+  });
+
+  it("uses active DOM only as exact-peer verification for the captured source", async () => {
+    const pending = new PendingTransfer();
+    pending.select(payloadWithSourceLocator());
+    const picker = {
+      showLoading: vi.fn(),
+      show: vi.fn(),
+      updateSelection: vi.fn(),
+      setError: vi.fn(),
+      hide: vi.fn(),
+    } as unknown as RecipientPicker;
+    const source: RecipientSourceAdapter = {
+      getActiveRecipient: vi.fn(() => ({ peerKey: "99", title: "Other", supported: true })),
+      listLoadedRecipients: vi.fn(async () => [recipient]),
+      searchRecipients: vi.fn(),
+      clearSearch: vi.fn(),
+    };
+    const delivery = { start: vi.fn() } as unknown as DeliveryCoordinator;
+    const controller = new RecipientPickerController(
+      source,
+      { cancel: vi.fn(), notifyDomChanged: vi.fn() } as unknown as TelegramChatNavigator,
+      picker,
+      {} as ComposerAdapter,
+      pending,
+      createLogger(),
+      delivery,
+    );
+
+    await controller.open();
+    const actions = vi.mocked(picker.showLoading).mock.calls[0]?.[0];
+    actions?.onToggle?.(recipient);
+    actions?.onNext();
+
+    expect(delivery.start).not.toHaveBeenCalled();
+  });
+
   it("clears pending state when Cancel is clicked", async () => {
     const pending = new PendingTransfer();
     pending.select(createTextMessagePayload("fixture-payload"));

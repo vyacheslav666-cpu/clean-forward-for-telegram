@@ -1,7 +1,9 @@
 /** Adds the Clean Forward action using the verified Telegram Web K menu structure. */
+import { CLEAN_FORWARD_RUNTIME_FINGERPRINT } from "../app/CleanForwardRuntime";
 import type { Logger } from "../utils/logger";
 
 const ACTION_ATTRIBUTE = "data-clean-forward-context-action";
+const ACTION_OWNER_ATTRIBUTE = "data-clean-forward-runtime-owner";
 const ACTION_LABEL = "Отправить как новое";
 const NATIVE_ITEM_SELECTOR = ":scope > .btn-menu-item";
 const NATIVE_ITEM_TEXT_SELECTOR = ".btn-menu-item-text";
@@ -23,22 +25,38 @@ export class ContextMenuIntegration {
    * Ensures that a menu has exactly one action and refreshes its callback when Telegram reuses DOM.
    */
   public ensureAction(menu: HTMLElement, onSelect: () => void): void {
-    const existingItem = menu.querySelector<HTMLElement>(`[${ACTION_ATTRIBUTE}]`);
-    if (existingItem) {
-      const state = this.states.get(existingItem);
-      if (state) {
-        state.onSelect = onSelect;
-        state.activated = false;
-        this.log.debug("Контекстный пункт найден повторно; callback обновлён.", {
-          connected: existingItem.isConnected,
-        });
+    const existingItems = Array.from(
+      menu.querySelectorAll<HTMLElement>(`[${ACTION_ATTRIBUTE}]`),
+    );
+    const ownedItem = existingItems.find((candidate) => this.states.has(candidate));
+    if (ownedItem) {
+      for (const staleItem of existingItems) {
+        if (staleItem !== ownedItem) staleItem.remove();
       }
+      const state = this.states.get(ownedItem)!;
+      state.onSelect = onSelect;
+      state.activated = false;
+      this.stampOwner(ownedItem);
+      this.log.debug("Контекстный пункт найден повторно; callback обновлён.", {
+        connected: ownedItem.isConnected,
+      });
       return;
+    }
+
+    if (existingItems.length > 0) {
+      const previousOwners = existingItems.map(
+        (item) => item.getAttribute(ACTION_OWNER_ATTRIBUTE) ?? "legacy/unknown",
+      );
+      for (const staleItem of existingItems) staleItem.remove();
+      this.log.info("Удалён stale контекстный пункт предыдущего runtime.", {
+        previousOwners,
+        owner: CLEAN_FORWARD_RUNTIME_FINGERPRINT,
+      });
     }
 
     const item = document.createElement("div");
     item.classList.add("btn-menu-item", "rp-overflow");
-    item.setAttribute(ACTION_ATTRIBUTE, "");
+    this.stampOwner(item);
 
     const icon = document.createElement("span");
     icon.classList.add("tgico", "btn-menu-item-icon");
@@ -118,6 +136,11 @@ export class ContextMenuIntegration {
       connected: item.isConnected,
       placedNextToForward: Boolean(forwardItem),
     });
+  }
+
+  private stampOwner(item: HTMLElement): void {
+    item.setAttribute(ACTION_ATTRIBUTE, CLEAN_FORWARD_RUNTIME_FINGERPRINT);
+    item.setAttribute(ACTION_OWNER_ATTRIBUTE, CLEAN_FORWARD_RUNTIME_FINGERPRINT);
   }
 
   /** Repeats Telegram's vertical viewport clamp after the late menu-item insertion. */

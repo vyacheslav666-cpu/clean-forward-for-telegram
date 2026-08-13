@@ -8,6 +8,39 @@ import { createLogger, installComposer, installDialogRow } from "../helpers";
 const recipient: Recipient = { peerKey: "99", title: "Target", supported: true };
 
 describe("TelegramChatNavigator", () => {
+  function installProductionChat(
+    composerPeerKey: string,
+    avatarPeerKey?: string,
+  ): HTMLElement {
+    const column = document.createElement("section");
+    column.id = "column-center";
+    const chats = document.createElement("div");
+    chats.className = "chats-container";
+    const chat = document.createElement("div");
+    chat.className = "chat tabs-tab active";
+    if (avatarPeerKey !== undefined) {
+      const topbar = document.createElement("div");
+      topbar.className = "topbar";
+      const avatar = document.createElement("div");
+      avatar.className = "avatar person-avatar";
+      avatar.dataset.peerId = avatarPeerKey;
+      topbar.append(avatar);
+      chat.append(topbar);
+    }
+    const owner = document.createElement("div");
+    owner.className = "chat-input chat-input-main";
+    const composer = document.createElement("div");
+    composer.className = "input-message-input";
+    composer.setAttribute("contenteditable", "true");
+    composer.dataset.peerId = composerPeerKey;
+    owner.append(composer);
+    chat.append(owner);
+    chats.append(chat);
+    column.append(chats);
+    document.body.append(column);
+    return chat;
+  }
+
   function appendVisibleDraft(composer: HTMLElement, label: string): void {
     const draft = document.createElement("div");
     draft.className = "reply-wrapper";
@@ -212,6 +245,7 @@ describe("TelegramChatNavigator", () => {
     installComposer("100").closest(".chat-input-main")!.classList.add("hide");
     const row = installDialogRow("99");
     row.addEventListener("mousedown", () => {
+      row.classList.add("active");
       const column = document.createElement("section");
       column.id = "column-center";
       const chats = document.createElement("div");
@@ -303,16 +337,124 @@ describe("TelegramChatNavigator", () => {
   });
 
   it("blocks navigation while Telegram is sending", async () => {
+    vi.useFakeTimers();
     installDialogRow("99");
+    const composer = installComposer("99");
     const sending = document.createElement("div");
     sending.className = "sending";
-    document.body.append(sending);
-    const result = await new TelegramChatNavigator(createLogger()).navigate(
+    composer.parentElement!.append(sending);
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
       recipient,
       new AbortController().signal,
     );
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await navigation;
     expect(result.success).toBe(false);
     expect(result.message).toContain("ещё отправляет");
+  });
+
+  it("restores the source despite sending markers in the chat being left and an inactive mounted chat", async () => {
+    vi.useFakeTimers();
+    const column = document.createElement("section");
+    column.id = "column-center";
+    const chats = document.createElement("div");
+    chats.className = "chats-container";
+    column.append(chats);
+    document.body.append(column);
+
+    const appendChat = (peerKey: string, active: boolean, sending: boolean): HTMLElement => {
+      const chat = document.createElement("div");
+      chat.className = `chat tabs-tab${active ? " active" : ""}`;
+      const owner = document.createElement("div");
+      owner.className = "chat-input chat-input-main";
+      const composer = document.createElement("div");
+      composer.className = "input-message-input";
+      composer.setAttribute("contenteditable", "true");
+      composer.dataset.peerId = peerKey;
+      owner.append(composer);
+      chat.append(owner);
+      if (sending) {
+        const marker = document.createElement("div");
+        marker.className = "sending";
+        chat.append(marker);
+      }
+      chats.append(chat);
+      return chat;
+    };
+
+    const destinationChat = appendChat("100", true, true);
+    const sourceChat = appendChat("99", false, false);
+    appendChat("777", false, true);
+    const row = installDialogRow("99");
+    const mousedown = vi.fn(() => {
+      row.classList.add("active");
+      destinationChat.classList.remove("active");
+      sourceChat.classList.add("active");
+    });
+    row.addEventListener("mousedown", mousedown);
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+      "source-restore",
+    );
+    await vi.advanceTimersByTimeAsync(600);
+
+    await expect(navigation).resolves.toMatchObject({ success: true });
+    expect(mousedown).toHaveBeenCalledOnce();
+    expect(sourceChat.classList.contains("active")).toBe(true);
+  });
+
+  it("does not report source restore success when the same-chat topbar proves another peer", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    row.addEventListener("mousedown", () => installProductionChat("99", "100"));
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+      "source-restore",
+    );
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    await expect(navigation).resolves.toMatchObject({ success: false });
+  });
+
+  it("accepts search-only source restore when the same-chat topbar independently proves the peer", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    row.addEventListener("mousedown", () => {
+      row.remove();
+      installProductionChat("99", "99");
+    });
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+      "source-restore",
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(navigation).resolves.toMatchObject({ success: true });
+    expect(document.querySelector(".row.chatlist-chat.active[data-peer-id='99']")).toBeNull();
+  });
+
+  it("accepts source restore without topbar avatar when the active recent row proves the peer", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    row.addEventListener("mousedown", () => {
+      row.classList.add("active");
+      installProductionChat("99");
+    });
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+      "source-restore",
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(navigation).resolves.toMatchObject({ success: true });
   });
 
   it("times out without partially changing composer content", async () => {
@@ -393,6 +535,23 @@ describe("TelegramChatNavigator", () => {
 
     await expect(navigation).resolves.toMatchObject({ success: false });
     expect(mousedown).toHaveBeenCalledTimes(3);
+  });
+
+  it("gives source restoration one stronger but still bounded navigation policy", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    const mousedown = vi.fn();
+    row.addEventListener("mousedown", mousedown);
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+      "source-restore",
+    );
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    await expect(navigation).resolves.toMatchObject({ success: false });
+    expect(mousedown).toHaveBeenCalledTimes(4);
   });
 
   it("reasserts the expected peer after the user switches to another chat during navigation", async () => {

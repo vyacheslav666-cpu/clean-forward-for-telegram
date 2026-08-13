@@ -5,6 +5,7 @@ import type { RecipientSourceAdapter } from "../recipient/RecipientSourceAdapter
 import type { Logger } from "../utils/logger";
 import {
   findActiveComposerContext,
+  hasIndependentActivePeerProof,
   type TelegramComposerContext,
 } from "./TelegramComposerDom";
 
@@ -18,11 +19,20 @@ const NATIVE_FORWARD_POPUP_SELECTOR = ".popup.popup-forward.active";
 const MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
 const REPLY_OR_FORWARD_DRAFT_SELECTOR = ".reply-wrapper";
 const SENDING_SELECTOR = ".sending";
-const NAVIGATION_MAX_ATTEMPTS = 3;
-const NAVIGATION_ATTEMPT_TIMEOUT_MS = 800;
 const NAVIGATION_POLL_INTERVAL_MS = 50;
 const REQUIRED_STABLE_POLLS = 3;
-const NAVIGATION_RETRY_BACKOFF_MS = [100, 250] as const;
+const DESTINATION_NAVIGATION_POLICY = {
+  maxAttempts: 3,
+  attemptTimeoutMs: 800,
+  retryBackoffMs: [100, 250] as readonly number[],
+} as const;
+const SOURCE_RESTORE_NAVIGATION_POLICY = {
+  // Restoration is a safety boundary, so tolerate a longer TWeb rerender/search cycle while
+  // remaining strictly bounded. Exact peer and composer proof are unchanged.
+  maxAttempts: 4,
+  attemptTimeoutMs: 1_200,
+  retryBackoffMs: [100, 250, 500] as readonly number[],
+} as const;
 const NAVIGATION_TIMEOUT_MESSAGE =
   "Telegram не открыл выбранный чат вовремя. Попробуйте ещё раз.";
 
@@ -30,6 +40,15 @@ const NAVIGATION_TIMEOUT_MESSAGE =
 export interface ChatNavigationResult {
   readonly success: boolean;
   readonly message: string;
+}
+
+/** Distinguishes ordinary recipient delivery from the mandatory return to the captured source. */
+export type ChatNavigationIntent = "destination" | "source-restore";
+
+interface NavigationPolicy {
+  readonly maxAttempts: number;
+  readonly attemptTimeoutMs: number;
+  readonly retryBackoffMs: readonly number[];
 }
 
 type NavigationState =
@@ -54,6 +73,8 @@ interface StableComposerCandidate {
 
 interface NavigationWait {
   readonly recipient: Readonly<Recipient>;
+  readonly intent: ChatNavigationIntent;
+  readonly policy: NavigationPolicy;
   readonly resolve: (result: ChatNavigationResult) => void;
   readonly signal: AbortSignal;
   attemptCount: number;
@@ -84,23 +105,37 @@ export class TelegramChatNavigator {
   public async navigate(
     recipient: Readonly<Recipient>,
     signal: AbortSignal,
+    intent: ChatNavigationIntent = "destination",
   ): Promise<ChatNavigationResult> {
+    this.log.info("Telegram navigation transaction started.", {
+      peerKey: recipient.peerKey,
+      intent,
+    });
     this.cancelActiveWait("Переход был заменён новой операцией.");
+    let result: ChatNavigationResult;
     if (signal.aborted) {
-      return { success: false, message: "Переход отменён." };
+      result = { success: false, message: "Переход отменён." };
+    } else if (!isSimplePeerKey(recipient.peerKey)) {
+      result = { success: false, message: "Telegram topics and composite peers are not supported." };
+    } else {
+      const unsupported = this.inspectUnsupportedRow(this.findDialogRow(recipient.peerKey));
+      result = unsupported
+        ? { success: false, message: unsupported }
+        : await this.waitForExpectedPeer(recipient, signal, intent);
     }
-    if (!isSimplePeerKey(recipient.peerKey)) {
-      return { success: false, message: "Telegram topics and composite peers are not supported." };
+    const detail = { peerKey: recipient.peerKey, intent };
+    if (result.success) {
+      this.log.info("Telegram navigation transaction proved exact peer and composer.", detail);
+    } else {
+      this.log.warn("Telegram navigation transaction failed before exact peer proof.", detail);
     }
-    const unsupported = this.inspectUnsupportedRow(this.findDialogRow(recipient.peerKey));
-    return unsupported
-      ? { success: false, message: unsupported }
-      : this.waitForExpectedPeer(recipient, signal);
+    return result;
   }
 
   public waitForExpectedPeer(
     recipient: Readonly<Recipient>,
     signal: AbortSignal,
+    intent: ChatNavigationIntent = "destination",
   ): Promise<ChatNavigationResult> {
     if (signal.aborted) {
       return Promise.resolve({ success: false, message: "Переход отменён." });
@@ -108,6 +143,8 @@ export class TelegramChatNavigator {
     return new Promise((resolve) => {
       const wait: NavigationWait = {
         recipient: snapshotRecipient(recipient),
+        intent,
+        policy: this.getNavigationPolicy(intent),
         resolve,
         signal,
         attemptCount: 0,
@@ -201,7 +238,7 @@ export class TelegramChatNavigator {
     }
     wait.attemptTimeoutId = window.setTimeout(
       () => this.finishAttempt(wait),
-      NAVIGATION_ATTEMPT_TIMEOUT_MS,
+      wait.policy.attemptTimeoutMs,
     );
   }
 
@@ -216,15 +253,16 @@ export class TelegramChatNavigator {
       this.recipientSource?.clearSearch();
       wait.searchReleased = true;
     }
-    if (wait.attemptCount >= NAVIGATION_MAX_ATTEMPTS) {
+    if (wait.attemptCount >= wait.policy.maxAttempts) {
       wait.finish({ success: false, message: wait.lastTransientBlocker ?? NAVIGATION_TIMEOUT_MESSAGE });
       return;
     }
 
-    const backoff = NAVIGATION_RETRY_BACKOFF_MS[wait.attemptCount - 1] ?? 0;
+    const backoff = wait.policy.retryBackoffMs[wait.attemptCount - 1] ?? 0;
     this.log.warn("Exact Telegram peer is not ready; restarting navigation from resolution.", {
       attempt: wait.attemptCount,
-      maxAttempts: NAVIGATION_MAX_ATTEMPTS,
+      maxAttempts: wait.policy.maxAttempts,
+      intent: wait.intent,
       state: wait.state,
     });
     wait.retryTimeoutId = window.setTimeout(() => {
@@ -234,7 +272,7 @@ export class TelegramChatNavigator {
   }
 
   private activateRowIfAvailable(wait: NavigationWait): void {
-    if (wait.attemptActivatedRow || wait.releasingSearch || this.findTransientBlocker()) {
+    if (wait.attemptActivatedRow || wait.releasingSearch || this.findTransientBlocker(wait)) {
       return;
     }
     wait.state = "resolve-target";
@@ -263,7 +301,8 @@ export class TelegramChatNavigator {
     wait.state = "initiate-navigation";
     this.log.info("Native Telegram peer navigation initiated.", {
       attempt: wait.attemptCount,
-      maxAttempts: NAVIGATION_MAX_ATTEMPTS,
+      maxAttempts: wait.policy.maxAttempts,
+      intent: wait.intent,
       source: row.matches(SEARCH_DIALOG_ROW_SELECTOR) ? "search" : "recent",
     });
     this.activateDialogRow(row);
@@ -291,7 +330,7 @@ export class TelegramChatNavigator {
       wait.finish({ success: false, message: terminalBlocker });
       return;
     }
-    const transientBlocker = this.findTransientBlocker();
+    const transientBlocker = this.findTransientBlocker(wait);
     wait.lastTransientBlocker = transientBlocker;
     if (transientBlocker) {
       wait.candidate = null;
@@ -312,6 +351,17 @@ export class TelegramChatNavigator {
     const invalid = this.inspectComposer(composer);
     if (invalid) {
       wait.finish({ success: false, message: invalid });
+      return;
+    }
+    if (
+      wait.intent === "source-restore" &&
+      !hasIndependentActivePeerProof(composer, wait.recipient.peerKey)
+    ) {
+      // During TWeb transitions a stale composer can briefly keep the requested data-peer-id
+      // while another chat already owns the visible topbar. Never turn that transient state into
+      // a successful source restore. Search-only chats may have no active sidebar row, so the
+      // same-chat topbar avatar is the independent production fallback.
+      wait.candidate = null;
       return;
     }
 
@@ -400,10 +450,24 @@ export class TelegramChatNavigator {
     return null;
   }
 
-  private findTransientBlocker(): string | null {
-    return document.querySelector(SENDING_SELECTOR)
+  private findTransientBlocker(wait: NavigationWait): string | null {
+    const active = findActiveComposerContext();
+    // A `.sending` marker in the chat we are leaving (or in one of TWeb's inactive mounted
+    // chats) must never prevent the mandatory source restore from being initiated. Only a
+    // marker owned by the already-active intended peer can delay its final stable proof.
+    if (!active || active.peerId !== wait.recipient.peerKey) {
+      return null;
+    }
+    const scope: ParentNode = active.chat ?? active.container.closest(".chat") ?? document;
+    return scope.querySelector(SENDING_SELECTOR)
       ? "Telegram ещё отправляет другое сообщение. Дождитесь завершения и повторите попытку."
       : null;
+  }
+
+  private getNavigationPolicy(intent: ChatNavigationIntent): NavigationPolicy {
+    return intent === "source-restore"
+      ? SOURCE_RESTORE_NAVIGATION_POLICY
+      : DESTINATION_NAVIGATION_POLICY;
   }
 
   private inspectUnsupportedRow(row: HTMLElement | null): string | null {

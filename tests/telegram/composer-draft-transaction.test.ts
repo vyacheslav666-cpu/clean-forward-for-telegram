@@ -13,6 +13,53 @@ describe("composer draft transaction", () => {
     expect(composer.textContent).toBe("");
   });
 
+  it("does not fail or erase Telegram-owned post-Send DOM when the captured draft was empty", async () => {
+    const composer = installComposer("8");
+    const started = new TelegramDomAdapter(createLogger()).beginDraftTransaction("8");
+    expect(started.success).toBe(true);
+    if (!started.success) return;
+
+    const telegramAcknowledgement = document.createElement("span");
+    telegramAcknowledgement.className = "telegram-post-send-placeholder";
+    telegramAcknowledgement.textContent = "Telegram-owned transient state";
+    composer.replaceChildren(telegramAcknowledgement);
+
+    await expect(started.transaction.restore()).resolves.toEqual({
+      success: true,
+      message: "Исходный draft был пуст; восстановление не требуется.",
+    });
+    expect(composer.firstElementChild).toBe(telegramAcknowledgement);
+    expect(composer.textContent).toBe("Telegram-owned transient state");
+    expect(document.execCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "a br sentinel", install: (composer: HTMLElement) => composer.append(document.createElement("br")) },
+    { label: "whitespace sentinels", install: (composer: HTMLElement) => composer.append(" \n\t ") },
+  ])(
+    "treats $label as an empty draft and tolerates a post-Send transient without erasing it",
+    async ({ install }) => {
+      const composer = installComposer("8");
+      install(composer);
+      const started = new TelegramDomAdapter(createLogger()).beginDraftTransaction("8");
+      expect(started.success).toBe(true);
+      if (!started.success) return;
+      expect(started.transaction.hadDraft).toBe(false);
+
+      const transient = document.createElement("span");
+      transient.className = "telegram-post-send-placeholder";
+      transient.textContent = "Telegram-owned transient state";
+      composer.replaceChildren(transient);
+
+      await expect(started.transaction.restore()).resolves.toEqual({
+        success: true,
+        message: "Исходный draft был пуст; восстановление не требуется.",
+      });
+      expect(composer.firstElementChild).toBe(transient);
+      expect(document.execCommand).not.toHaveBeenCalled();
+    },
+  );
+
   it("temporarily clears and restores a simple text draft", async () => {
     const composer = installComposer("8", "user draft");
     const started = new TelegramDomAdapter(createLogger()).beginDraftTransaction("8");
@@ -21,6 +68,23 @@ describe("composer draft transaction", () => {
     expect(composer.textContent).toBe("");
     expect((await started.transaction.restore()).success).toBe(true);
     expect(composer.textContent).toBe("user draft");
+  });
+
+  it("still refuses to overwrite a changed composer when the captured draft was non-empty", async () => {
+    const composer = installComposer("8", "user draft");
+    const started = new TelegramDomAdapter(createLogger()).beginDraftTransaction("8");
+    expect(started.success).toBe(true);
+    if (!started.success) return;
+
+    composer.textContent = "changed after snapshot";
+    const execCallsBeforeRestore = vi.mocked(document.execCommand).mock.calls.length;
+
+    await expect(started.transaction.restore()).resolves.toEqual({
+      success: false,
+      message: "Draft не восстановлен: composer был изменён после snapshot.",
+    });
+    expect(composer.textContent).toBe("changed after snapshot");
+    expect(document.execCommand).toHaveBeenCalledTimes(execCallsBeforeRestore);
   });
 
   it("clears a real contenteditable selection with delete instead of empty insertText", () => {

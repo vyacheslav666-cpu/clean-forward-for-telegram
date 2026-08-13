@@ -50,6 +50,103 @@ describe("DeliveryProgressPanel", () => {
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
+  it("shows mandatory source restoration after the last receipt without premature controls", () => {
+    const onCancel = vi.fn();
+    const onClose = vi.fn();
+    const panel = new DeliveryProgressPanel(productionConfig);
+    panel.show(snapshot({
+      recipients: [{
+        recipient,
+        status: "sent",
+        sendClicked: true,
+        attemptCount: 1,
+        units: [unit("sent")],
+      }],
+      currentIndex: null,
+      currentRecipient: null,
+      sentCount: 1,
+      running: true,
+      retryableCount: 0,
+    }), { onCancel, onRetry: vi.fn(), onClose });
+
+    const shadow = document.querySelector<HTMLElement>(
+      "[data-clean-forward-delivery-progress]",
+    )!.shadowRoot!;
+    expect(shadow.textContent).toContain("Возвращаемся в исходный чат…");
+    expect(shadow.textContent).not.toContain("Операция завершена.");
+    expect(shadow.querySelector<HTMLButtonElement>(".cancel")!.hidden).toBe(true);
+    expect(shadow.querySelector<HTMLButtonElement>(".retry")!.hidden).toBe(true);
+    expect(shadow.querySelector<HTMLButtonElement>(".close")!.hidden).toBe(true);
+
+    const keydown = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    const keyup = new KeyboardEvent("keyup", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(keydown);
+    window.dispatchEvent(keyup);
+    expect(keydown.defaultPrevented).toBe(true);
+    expect(keyup.defaultPrevented).toBe(true);
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+
+    panel.update(snapshot({
+      recipients: [{
+        recipient,
+        status: "sent",
+        sendClicked: true,
+        attemptCount: 1,
+        units: [unit("sent")],
+      }],
+      currentIndex: null,
+      currentRecipient: null,
+      sentCount: 1,
+      running: false,
+      retryableCount: 0,
+    }));
+    expect(shadow.textContent).toContain("Операция завершена.");
+    expect(shadow.textContent).not.toContain("Возвращаемся в исходный чат…");
+    expect(shadow.querySelector<HTMLButtonElement>(".cancel")!.hidden).toBe(true);
+    expect(shadow.querySelector<HTMLButtonElement>(".close")!.hidden).toBe(false);
+    shadow.querySelector<HTMLButtonElement>(".close")!.click();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps retry backoff cancellable and does not label it as source restoration", () => {
+    const onCancel = vi.fn();
+    const panel = new DeliveryProgressPanel(productionConfig);
+    panel.show(snapshot({
+      recipients: [{
+        recipient,
+        status: "pending",
+        sendClicked: false,
+        attemptCount: 1,
+        units: [unit("pending")],
+      }],
+      currentIndex: null,
+      currentRecipient: null,
+      running: true,
+      retryableCount: 1,
+    }), { onCancel, onRetry: vi.fn(), onClose: vi.fn() });
+
+    const shadow = document.querySelector<HTMLElement>(
+      "[data-clean-forward-delivery-progress]",
+    )!.shadowRoot!;
+    expect(shadow.textContent).toContain("Подготовка следующего шага…");
+    expect(shadow.textContent).not.toContain("Возвращаемся в исходный чат…");
+    expect(shadow.textContent).not.toContain("Операция завершена.");
+    const cancel = shadow.querySelector<HTMLButtonElement>(".cancel")!;
+    expect(cancel.hidden).toBe(false);
+    cancel.click();
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(shadow.querySelector<HTMLButtonElement>(".close")!.hidden).toBe(true);
+  });
+
   it("shows a final retryable summary without leaving Cancel active", () => {
     const onRetry = vi.fn();
     const panel = new DeliveryProgressPanel();

@@ -19,6 +19,7 @@ import type { TelegramDomAdapter } from "./TelegramDomAdapter";
 import type {
   TelegramModelMessageSnapshot,
   TelegramSourceSnapshot,
+  TelegramSourceTargetSnapshot,
 } from "./TelegramSourceSnapshot";
 import { BinaryMediaSourceCaptureAdapter } from "./capture/BinaryMediaSourceCaptureAdapter";
 import { MediaGroupSourceCaptureAdapter } from "./capture/MediaGroupSourceCaptureAdapter";
@@ -50,11 +51,17 @@ export class SourceCaptureService {
 
   /** Compatibility entrypoint for the existing one-message context-menu flow. */
   public async extract(message: HTMLElement): Promise<MessagePayload | null> {
-    const snapshot = this.dom.readMessageSnapshot(message);
-    if (!snapshot) {
+    const sourceTarget = this.dom.readSourceTargetSnapshot(
+      message.dataset.peerId?.trim() ?? "",
+      message,
+    );
+    const snapshot = sourceTarget
+      ? this.dom.readMessageSnapshot(message, sourceTarget.peerKey)
+      : null;
+    if (!snapshot || !sourceTarget) {
       return null;
     }
-    const result = await this.captureSnapshots([snapshot]);
+    const result = await this.captureSnapshots([snapshot], sourceTarget);
     return result.kind === "captured" ? result.payload : null;
   }
 
@@ -62,12 +69,28 @@ export class SourceCaptureService {
    * Captures every source or returns one failure; no partial bundle escapes this method.
    * Telegram defines chat order by ascending local `mid`, not click or current DOM order.
    */
-  public async captureSnapshots(
+  public captureSnapshots(
     input: readonly TelegramSourceSnapshot[],
     signal?: AbortSignal,
+  ): Promise<SourceCaptureResult>;
+  public captureSnapshots(
+    input: readonly TelegramSourceSnapshot[],
+    sourceTarget: TelegramSourceTargetSnapshot,
+    signal?: AbortSignal,
+  ): Promise<SourceCaptureResult>;
+  public async captureSnapshots(
+    input: readonly TelegramSourceSnapshot[],
+    sourceTargetOrSignal?: TelegramSourceTargetSnapshot | AbortSignal,
+    trailingSignal?: AbortSignal,
   ): Promise<SourceCaptureResult> {
+    const sourceTarget = this.isAbortSignal(sourceTargetOrSignal)
+      ? undefined
+      : sourceTargetOrSignal;
+    const signal = this.isAbortSignal(sourceTargetOrSignal)
+      ? sourceTargetOrSignal
+      : trailingSignal;
     throwIfCaptureAborted(signal);
-    const normalized = this.normalizeSelection(input);
+    const normalized = this.normalizeSelection(input, sourceTarget);
     if (normalized.kind !== "valid") {
       return normalized.result;
     }
@@ -111,7 +134,10 @@ export class SourceCaptureService {
     }
   }
 
-  private normalizeSelection(input: readonly TelegramSourceSnapshot[]):
+  private normalizeSelection(
+    input: readonly TelegramSourceSnapshot[],
+    sourceTarget?: TelegramSourceTargetSnapshot,
+  ):
     | {
         readonly kind: "valid";
         readonly snapshots: readonly TelegramSourceSnapshot[];
@@ -139,6 +165,15 @@ export class SourceCaptureService {
         }),
       };
     }
+    if (sourceTarget && sourceTarget.peerKey !== sourcePeerKey) {
+      return {
+        kind: "invalid",
+        result: createSourceCaptureFailure({
+          code: "mixed-peer",
+          message: "Captured source target does not own the selected messages.",
+        }),
+      };
+    }
     const identities = new Set(snapshots.map(({ sourcePeerKey: peer, mid }) => `${peer}:${mid}`));
     if (identities.size !== snapshots.length) {
       return {
@@ -151,7 +186,13 @@ export class SourceCaptureService {
     }
 
     try {
-      const source = createSourceChatDescriptor(sourcePeerKey, null);
+      const source = sourceTarget
+        ? createSourceChatDescriptor(
+            sourceTarget.peerKey,
+            sourceTarget.title,
+            sourceTarget.searchQuery,
+          )
+        : createSourceChatDescriptor(sourcePeerKey, null);
       const messages = Object.freeze(snapshots.map((snapshot, order) =>
         createSourceMessageDescriptor(snapshot.identityResolution === "telegram-model"
           ? {
@@ -301,5 +342,13 @@ export class SourceCaptureService {
 
   private isAbortError(error: unknown): boolean {
     return error instanceof DOMException && error.name === "AbortError";
+  }
+
+  private isAbortSignal(
+    value: TelegramSourceTargetSnapshot | AbortSignal | undefined,
+  ): value is AbortSignal {
+    return value !== undefined &&
+      typeof (value as AbortSignal).aborted === "boolean" &&
+      typeof (value as AbortSignal).addEventListener === "function";
   }
 }

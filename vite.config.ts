@@ -1,12 +1,13 @@
 /** Configures the single-file Tampermonkey bundle and its metadata header. */
 import { defineConfig, type Plugin } from "vite";
+import packageMetadata from "./package.json";
 
 const USERSCRIPT_FILE_NAME = "clean-forward-for-telegram.user.js";
 
 const TAMPERMONKEY_HEADER = `// ==UserScript==
 // @name         Clean Forward for Telegram
 // @namespace    https://github.com/clean-forward-for-telegram
-// @version      0.1.0
+// @version      ${packageMetadata.version}
 // @description  Sends copied Telegram messages as new messages to selected chats.
 // @match        https://web.telegram.org/k/*
 // @grant        none

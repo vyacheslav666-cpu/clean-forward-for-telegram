@@ -59,7 +59,8 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
       ? matchingActiveRows[0]?.querySelector<HTMLElement>(TITLE_SELECTOR)
       : null;
     const chatTitle = context?.chat?.querySelector<HTMLElement>(ACTIVE_CHAT_TITLE_SELECTOR) ?? null;
-    const titleSource = rowTitle ?? chatTitle ?? context?.composer ?? null;
+    // Composer contents are the user's draft, never a peer locator or display title.
+    const titleSource = rowTitle ?? chatTitle;
     const title = (titleSource ? readTelegramText(titleSource).trim() : "") || peerKey;
     return Object.freeze({ peerKey, title, supported: true });
   }

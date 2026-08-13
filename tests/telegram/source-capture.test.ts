@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createSourceChatDescriptor } from "../../src/domain/SourceMessageDescriptor";
 import { SourceCaptureService } from "../../src/telegram/SourceCaptureService";
 import { TelegramDomAdapter } from "../../src/telegram/TelegramDomAdapter";
 import type {
@@ -84,6 +85,31 @@ describe("SourceCaptureService", () => {
       content: { text: "text-10" },
     });
     expect(Object.isFrozen(result.payload)).toBe(true);
+  });
+
+  it("keeps the synchronously captured source title and exact search locator", async () => {
+    const target = createSourceChatDescriptor("20", "Original source", "@original_source");
+    const result = await capture.captureSnapshots([snapshot(10)], target);
+    expect(result.kind).toBe("captured");
+    if (result.kind !== "captured") return;
+    expect(result.payload.source).toEqual({
+      peerKey: "20",
+      title: "Original source",
+      searchQuery: "@original_source",
+    });
+    expect(result.payload.source).not.toBe(target);
+    expect(Object.isFrozen(result.payload.source)).toBe(true);
+  });
+
+  it("rejects a source target that does not own the selected messages", async () => {
+    const result = await capture.captureSnapshots(
+      [snapshot(10)],
+      createSourceChatDescriptor("99", "Wrong source", "Wrong source"),
+    );
+    expect(result).toMatchObject({
+      kind: "capture-failed",
+      reason: { code: "mixed-peer" },
+    });
   });
 
   it("normalizes several selected messages by mid rather than click order", async () => {

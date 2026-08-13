@@ -37,17 +37,26 @@ export class RecipientPickerController {
     this.abortSession();
     this.selection.clear();
     const capturedSource = this.pending.peek()?.source ?? null;
-    const activeSource = this.source.getActiveRecipient?.() ?? null;
-    this.sourceRecipient = capturedSource
+    const activeSourcePeerKey = this.source.getActiveRecipient?.()?.peerKey ?? null;
+    // Navigation metadata is owned exclusively by the immutable payload. The live DOM may prove
+    // exact peer identity, but it must never overwrite title/query after asynchronous capture.
+    this.sourceRecipient = capturedSource &&
+      (activeSourcePeerKey === null || activeSourcePeerKey === capturedSource.peerKey)
       ? Object.freeze({
-          ...(activeSource?.peerKey === capturedSource.peerKey ? activeSource : {}),
           peerKey: capturedSource.peerKey,
-          title: capturedSource.title ??
-            (activeSource?.peerKey === capturedSource.peerKey ? activeSource.title : null) ??
-            capturedSource.peerKey,
+          title: capturedSource.title ?? capturedSource.peerKey,
+          ...(capturedSource.searchQuery
+            ? { searchQuery: capturedSource.searchQuery }
+            : {}),
           supported: true,
         })
       : null;
+    if (capturedSource && activeSourcePeerKey !== null && !this.sourceRecipient) {
+      this.log.warn("Active Telegram peer does not match the immutable captured source target.", {
+        capturedPeerKey: capturedSource.peerKey,
+        activePeerKey: activeSourcePeerKey,
+      });
+    }
     const session = new AbortController();
     this.session = session;
     const actions = this.createActions(session);

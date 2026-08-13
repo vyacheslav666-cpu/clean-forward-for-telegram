@@ -34,6 +34,12 @@ function installMainChat(peerKey: string): void {
   chats.className = "chats-container";
   const chat = document.createElement("div");
   chat.className = "chat tabs-tab active";
+  const topbar = document.createElement("div");
+  topbar.className = "topbar";
+  const avatar = document.createElement("div");
+  avatar.className = "person-avatar";
+  avatar.dataset.peerId = peerKey;
+  topbar.append(avatar);
   const owner = document.createElement("div");
   owner.className = "chat-input chat-input-main";
   const composer = document.createElement("div");
@@ -41,7 +47,7 @@ function installMainChat(peerKey: string): void {
   composer.setAttribute("contenteditable", "true");
   composer.dataset.peerId = peerKey;
   owner.append(composer);
-  chat.append(owner);
+  chat.append(topbar, owner);
   chats.append(chat);
   column.append(chats);
   document.body.append(column);

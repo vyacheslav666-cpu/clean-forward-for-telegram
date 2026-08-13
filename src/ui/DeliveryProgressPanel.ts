@@ -1,5 +1,6 @@
 /** Renders isolated automatic-delivery progress without depending on Telegram selectors. */
 import { appConfig, type AppConfig } from "../config";
+import { CLEAN_FORWARD_RUNTIME_VERSION } from "../app/CleanForwardRuntime";
 import type { DeliveryBatchSnapshot, RecipientDeliveryStatus } from "../delivery/DeliveryBatch";
 import { EscapeKeyLifecycle } from "../utils/EscapeKeyLifecycle";
 
@@ -133,21 +134,29 @@ export class DeliveryProgressPanel {
     this.snapshot = snapshot;
     const total = snapshot.recipients.length;
     const displayIndex = snapshot.currentIndex === null ? null : snapshot.currentIndex + 1;
-    this.title.textContent = snapshot.running ? "Отправка сообщений" : "Результат отправки";
+    const restoringSource = isRestoringSource(snapshot);
+    this.title.textContent = snapshot.running
+      ? `Отправка сообщений · v${CLEAN_FORWARD_RUNTIME_VERSION}`
+      : `Результат отправки · v${CLEAN_FORWARD_RUNTIME_VERSION}`;
     this.headline.textContent = snapshot.running && displayIndex !== null
       ? `Отправка ${displayIndex} / ${total}`
       : `Обработано: ${snapshot.sentCount + snapshot.failedCount + snapshot.unknownCount} / ${total}`;
     this.current.toggleAttribute("data-safety-failure", Boolean(snapshot.safetyFailure));
     this.current.textContent = snapshot.safetyFailure
       ? `Остановка безопасности: ${snapshot.safetyFailure}`
-      : snapshot.currentRecipient
+      : restoringSource
+        ? "Возвращаемся в исходный чат…"
+        : snapshot.currentRecipient
         ? `Получатель: ${snapshot.currentRecipient.title}`
         : snapshot.cancelRequested
           ? "Операция остановлена перед следующим Send."
-          : "Операция завершена.";
+          : snapshot.running
+            ? "Подготовка следующего шага…"
+            : "Операция завершена.";
     this.counts.textContent = `Отправлено: ${snapshot.sentCount} · Ошибки: ${snapshot.failedCount} · Неизвестно: ${snapshot.unknownCount}`;
     this.list.replaceChildren(...snapshot.recipients.map((record) => this.renderRecord(record)));
-    this.cancelButton.hidden = !snapshot.running;
+    // Source restoration is mandatory safety work: it cannot be cancelled or closed midway.
+    this.cancelButton.hidden = !snapshot.running || restoringSource;
     this.cancelButton.textContent = snapshot.currentRecipient && recordIsSending(snapshot)
       ? "Остановить после текущего"
       : "Отмена";
@@ -200,6 +209,9 @@ export class DeliveryProgressPanel {
       shouldHandle: () =>
         this.host.isConnected && !this.host.hidden && this.isTopLevelProjectOverlay(),
       onEscape: () => {
+        if (this.snapshot && isRestoringSource(this.snapshot)) {
+          return;
+        }
         if (this.snapshot?.running) {
           this.actions?.onCancel();
         } else {
@@ -242,4 +254,17 @@ export class DeliveryProgressPanel {
 
 function recordIsSending(snapshot: DeliveryBatchSnapshot): boolean {
   return snapshot.currentIndex !== null && snapshot.recipients[snapshot.currentIndex]?.status === "sending";
+}
+
+/** Detects the coordinator's mandatory finally-phase without confusing a retry backoff with it. */
+function isRestoringSource(snapshot: DeliveryBatchSnapshot): boolean {
+  if (!snapshot.running || snapshot.currentRecipient !== null) {
+    return false;
+  }
+  if (snapshot.cancelRequested || snapshot.safetyFailure || snapshot.unknownCount > 0) {
+    return true;
+  }
+  return snapshot.recipients.every((record) =>
+    record.status === "sent" || record.status === "failed" || record.status === "unknown",
+  );
 }

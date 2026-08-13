@@ -2,7 +2,10 @@
 import type { Logger } from "../utils/logger";
 import { findActiveComposerContext } from "./TelegramComposerDom";
 import type { TelegramDomAdapter } from "./TelegramDomAdapter";
-import type { TelegramMessageSnapshot } from "./TelegramSourceSnapshot";
+import type {
+  TelegramMessageSnapshot,
+  TelegramSourceTargetSnapshot,
+} from "./TelegramSourceSnapshot";
 
 const SELECTION_WRAPPER_SELECTOR = ".chat-input-wrapper.selection-wrapper";
 const SELECTION_TOOLBAR_SELECTOR = ".chat-input-plate.selection-container";
@@ -25,6 +28,7 @@ export interface TelegramSelectionContext {
   readonly nativeForward: HTMLElement;
   readonly countElement: HTMLElement;
   readonly sourcePeerKey: string;
+  readonly sourceTarget: TelegramSourceTargetSnapshot;
 }
 
 /** Fail-closed result of projecting Telegram's native selected set through visible DOM. */
@@ -64,11 +68,26 @@ export class TelegramSelectionDomAdapter {
     const toolbar = wrapper.querySelector<HTMLElement>(SELECTION_TOOLBAR_SELECTOR);
     const nativeForward = toolbar?.querySelector<HTMLElement>(SELECTION_FORWARD_SELECTOR);
     const countElement = toolbar?.querySelector<HTMLElement>(SELECTION_COUNT_SELECTOR);
-    if (!composer.container.contains(wrapper) || !toolbar || !nativeForward || !countElement) {
+    const sourceTarget = this.dom.readSourceTargetSnapshot(composer.peerId);
+    if (
+      !composer.container.contains(wrapper) ||
+      (composer.chat !== null && !composer.chat.contains(history)) ||
+      !toolbar ||
+      !nativeForward ||
+      !countElement ||
+      !sourceTarget
+    ) {
       return null;
     }
 
-    return { history, toolbar, nativeForward, countElement, sourcePeerKey: composer.peerId };
+    return {
+      history,
+      toolbar,
+      nativeForward,
+      countElement,
+      sourcePeerKey: composer.peerId,
+      sourceTarget,
+    };
   }
 
   /** Reports whether the same native selection session still owns the toolbar. */
@@ -131,7 +150,7 @@ export class TelegramSelectionDomAdapter {
       if (element.dataset.peerId !== context.sourcePeerKey) {
         return this.reject("mixed-peer", "Выбранные сообщения относятся к разным source peer.");
       }
-      const snapshot = this.dom.readMessageSnapshot(element);
+      const snapshot = this.dom.readMessageSnapshot(element, context.sourceTarget.peerKey);
       if (!snapshot) {
         return this.reject(
           "identity-unavailable",

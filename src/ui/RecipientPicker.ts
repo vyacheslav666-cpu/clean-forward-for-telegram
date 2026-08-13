@@ -1,11 +1,12 @@
 /** Renders the isolated single-recipient picker without knowing Telegram DOM selectors. */
+import { CLEAN_FORWARD_RUNTIME_VERSION } from "../app/CleanForwardRuntime";
 import type { Recipient } from "../recipient/Recipient";
 import { EscapeKeyLifecycle } from "../utils/EscapeKeyLifecycle";
 
 const PICKER_HOST_ATTRIBUTE = "data-clean-forward-recipient-picker";
 const PROJECT_OVERLAY_SELECTOR =
   "[data-clean-forward-recipient-picker], [data-clean-forward-delivery-progress]";
-const PICKER_TITLE = "Отправить как новое";
+const PICKER_TITLE = `Отправить как новое · v${CLEAN_FORWARD_RUNTIME_VERSION}`;
 const SEARCH_PLACEHOLDER = "Поиск чатов";
 const NEXT_LABEL = "Далее";
 const CANCEL_LABEL = "Отмена";

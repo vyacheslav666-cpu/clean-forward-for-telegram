@@ -4,6 +4,8 @@
 export interface SourceChatDescriptor {
   readonly peerKey: string;
   readonly title: string | null;
+  /** Exact native-search locator captured while the source peer was still addressable. */
+  readonly searchQuery?: string;
 }
 
 interface SourceMessageDescriptorBase {
@@ -37,12 +39,20 @@ export type SourceMessageDescriptor =
 export function createSourceChatDescriptor(
   peerKey: string,
   title: string | null,
+  searchQuery?: string,
 ): SourceChatDescriptor {
   if (!peerKey.trim()) {
     throw new Error("Source peerKey must not be empty.");
   }
+  if (searchQuery !== undefined && !searchQuery.trim()) {
+    throw new Error("Source searchQuery must not be empty when present.");
+  }
 
-  return Object.freeze({ peerKey, title });
+  return Object.freeze({
+    peerKey,
+    title,
+    ...(searchQuery === undefined ? {} : { searchQuery: searchQuery.trim() }),
+  });
 }
 
 /** Copies and freezes source-message identity so later caller mutation cannot alter a transfer. */

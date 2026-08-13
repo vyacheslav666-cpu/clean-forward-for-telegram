@@ -14,7 +14,11 @@ import { createBinaryMediaContent, createPlainTextContent, createTransferMediaIt
 import { createMediaGroupTransferUnit, createTextTransferUnit, type TransferUnit } from "../../src/domain/TransferUnit";
 import type { Recipient } from "../../src/recipient/Recipient";
 import type { ComposerAdapter } from "../../src/telegram/ComposerAdapter";
-import type { ChatNavigationResult, TelegramChatNavigator } from "../../src/telegram/TelegramChatNavigator";
+import type {
+  ChatNavigationIntent,
+  ChatNavigationResult,
+  TelegramChatNavigator,
+} from "../../src/telegram/TelegramChatNavigator";
 import type { TelegramSendAdapter, TelegramSendResult } from "../../src/telegram/TelegramSendAdapter";
 import type { DeliveryProgressPanel } from "../../src/ui/DeliveryProgressPanel";
 import { createLogger, createMessagePayloadFixture, createTextBundlePayload } from "../helpers";
@@ -27,7 +31,11 @@ interface HarnessOptions {
   readonly showDeliveryResultDialog?: boolean;
   readonly payload?: TelegramDeliveryPayload;
   readonly sourcePayload?: MessagePayload;
-  readonly navigate?: (recipient: Readonly<Recipient>, signal: AbortSignal) => Promise<ChatNavigationResult>;
+  readonly navigate?: (
+    recipient: Readonly<Recipient>,
+    signal: AbortSignal,
+    intent?: ChatNavigationIntent,
+  ) => Promise<ChatNavigationResult>;
   readonly insert?: (payload: TelegramDeliveryPayload, peerKey: string) => Promise<{ success: boolean; message: string }>;
   readonly prepareUnit?: (unit: TransferUnit, peerKey: string) => Promise<{ success: boolean; message: string }>;
   readonly send?: (
@@ -228,7 +236,11 @@ describe("DeliveryCoordinator", () => {
   it("automatically sends one text recipient", async () => {
     const harness = createHarness();
     const result = await startBatch(harness);
-    expect(harness.navigator.navigate).toHaveBeenCalledWith(first, expect.any(AbortSignal));
+    expect(harness.navigator.navigate).toHaveBeenCalledWith(
+      first,
+      expect.any(AbortSignal),
+      "destination",
+    );
     expect(harness.composer.insert).toHaveBeenCalledWith(harness.payload, "101");
     expect(harness.sender.sendPrepared).toHaveBeenCalledOnce();
     expect(result.sentCount).toBe(1);
@@ -298,7 +310,12 @@ describe("DeliveryCoordinator", () => {
     const result = await run;
 
     expect(result.cancelRequested).toBe(true);
-    expect(harness.navigator.navigate).not.toHaveBeenCalled();
+    expect(harness.navigator.navigate).toHaveBeenCalledOnce();
+    expect(harness.navigator.navigate).toHaveBeenCalledWith(
+      harness.sourceRecipient,
+      expect.any(AbortSignal),
+      "source-restore",
+    );
     expect(harness.composer.insert).not.toHaveBeenCalled();
     expect(harness.sender.sendPrepared).not.toHaveBeenCalled();
   });
@@ -414,6 +431,7 @@ describe("DeliveryCoordinator", () => {
     expect(harness.navigator.navigate).toHaveBeenLastCalledWith(
       harness.sourceRecipient,
       expect.any(AbortSignal),
+      "source-restore",
     );
     expect(harness.sender.sendPrepared).toHaveBeenCalledOnce();
     expect(harness.pending.peek()).toBeNull();
@@ -438,6 +456,7 @@ describe("DeliveryCoordinator", () => {
     expect(harness.navigator.navigate).toHaveBeenLastCalledWith(
       harness.sourceRecipient,
       expect.any(AbortSignal),
+      "source-restore",
     );
   });
 
@@ -456,6 +475,7 @@ describe("DeliveryCoordinator", () => {
     expect(harness.navigator.navigate).toHaveBeenLastCalledWith(
       harness.sourceRecipient,
       expect.any(AbortSignal),
+      "source-restore",
     );
   });
 
@@ -515,7 +535,10 @@ describe("DeliveryCoordinator", () => {
     const result = await startBatch(harness);
 
     expect(result.sentCount).toBe(1);
-    expect(harness.navigator.navigate).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(harness.navigator.navigate).mock.calls.filter(([, , intent]) =>
+      intent === "destination")).toHaveLength(2);
+    expect(vi.mocked(harness.navigator.navigate).mock.calls.filter(([, , intent]) =>
+      intent === "source-restore")).toHaveLength(1);
     expect(harness.sender.sendPrepared).toHaveBeenCalledOnce();
     expect(result.recipients[0]).toMatchObject({ attemptCount: 2, retryReason: "peer not ready" });
   });
@@ -581,6 +604,7 @@ describe("DeliveryCoordinator", () => {
       expect(harness.navigator.navigate).toHaveBeenLastCalledWith(
         harness.sourceRecipient,
         expect.any(AbortSignal),
+        "source-restore",
       );
     },
   );
@@ -692,6 +716,67 @@ describe("DeliveryCoordinator", () => {
     expect(result.safetyFailure).toContain("source navigator crashed");
     expect(harness.progress.hide).not.toHaveBeenCalled();
     expect(harness.coordinator.hasOpenBatch()).toBe(true);
+  });
+
+  it("uses an immutable source-recipient snapshot for the mandatory restore", async () => {
+    let releaseDestination: ((result: ChatNavigationResult) => void) | null = null;
+    const harness = createHarness({
+      navigate: (_recipient, _signal, intent) => intent === "source-restore"
+        ? Promise.resolve({ success: true, message: "source restored" })
+        : new Promise((resolve) => { releaseDestination = resolve; }),
+    });
+    const originalTitle = harness.sourceRecipient.title;
+    const run = harness.coordinator.start([second], harness.sourceRecipient)!;
+    await vi.waitFor(() => expect(releaseDestination).not.toBeNull());
+
+    Object.assign(harness.sourceRecipient, {
+      title: "Mutated after start",
+      searchQuery: "@mutated_after_start",
+    });
+    releaseDestination!({ success: true, message: "opened" });
+    await run;
+
+    const restoreCall = vi.mocked(harness.navigator.navigate).mock.calls.find(([, , intent]) =>
+      intent === "source-restore");
+    expect(restoreCall?.[0]).toEqual({
+      peerKey: sourceChat.peerKey,
+      title: originalTitle,
+      supported: true,
+    });
+    expect(Object.isFrozen(restoreCall?.[0])).toBe(true);
+  });
+
+  it("does not skip source restoration when a stale source composer contradicts the active topbar", async () => {
+    const column = document.createElement("section");
+    column.id = "column-center";
+    const chats = document.createElement("div");
+    chats.className = "chats-container";
+    const chat = document.createElement("div");
+    chat.className = "chat tabs-tab active";
+    const topbar = document.createElement("div");
+    topbar.className = "topbar";
+    const avatar = document.createElement("div");
+    avatar.className = "person-avatar";
+    avatar.dataset.peerId = second.peerKey;
+    topbar.append(avatar);
+    const owner = document.createElement("div");
+    owner.className = "chat-input chat-input-main";
+    const composer = document.createElement("div");
+    composer.className = "input-message-input";
+    composer.contentEditable = "true";
+    composer.dataset.peerId = sourceChat.peerKey;
+    owner.append(composer);
+    chat.append(topbar, owner);
+    chats.append(chat);
+    column.append(chats);
+    document.body.append(column);
+    const harness = createHarness();
+
+    const result = await startBatch(harness, [second]);
+
+    expect(result.safetyFailure).toBeUndefined();
+    expect(vi.mocked(harness.navigator.navigate).mock.calls.filter(([, , intent]) =>
+      intent === "source-restore")).toHaveLength(1);
   });
 
   it("stops all remaining work when prepared-content cleanup cannot be confirmed", async () => {
@@ -926,7 +1011,9 @@ describe("DeliveryCoordinator", () => {
   it("does not start two batches from a double Next", async () => {
     let releaseNavigation: ((result: ChatNavigationResult) => void) | null = null;
     const harness = createHarness({
-      navigate: () => new Promise((resolve) => { releaseNavigation = resolve; }),
+      navigate: (_recipient, _signal, intent) => intent === "source-restore"
+        ? Promise.resolve({ success: true, message: "source restored" })
+        : new Promise((resolve) => { releaseNavigation = resolve; }),
     });
     const firstRun = harness.coordinator.start([first], harness.sourceRecipient);
     const secondRun = harness.coordinator.start([first], harness.sourceRecipient);
@@ -935,6 +1022,9 @@ describe("DeliveryCoordinator", () => {
     await Promise.resolve();
     releaseNavigation!({ success: true, message: "opened" });
     await firstRun;
-    expect(harness.navigator.navigate).toHaveBeenCalledOnce();
+    expect(vi.mocked(harness.navigator.navigate).mock.calls.filter(([, , intent]) =>
+      intent === "destination")).toHaveLength(1);
+    expect(vi.mocked(harness.navigator.navigate).mock.calls.filter(([, , intent]) =>
+      intent === "source-restore")).toHaveLength(1);
   });
 });

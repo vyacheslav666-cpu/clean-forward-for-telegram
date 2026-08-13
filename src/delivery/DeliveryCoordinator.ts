@@ -4,9 +4,13 @@ import type { MessagePayload } from "../domain/MessagePayload";
 import type { PendingTransfer } from "../domain/PendingTransfer";
 import type { TransferUnit } from "../domain/TransferUnit";
 import type { Recipient } from "../recipient/Recipient";
+import { snapshotRecipient } from "../recipient/Recipient";
 import type { ComposerAdapter } from "../telegram/ComposerAdapter";
 import type { TelegramChatNavigator } from "../telegram/TelegramChatNavigator";
-import { findActiveComposerContext } from "../telegram/TelegramComposerDom";
+import {
+  findActiveComposerContext,
+  hasIndependentActivePeerProof,
+} from "../telegram/TelegramComposerDom";
 import type { TelegramSendAdapter } from "../telegram/TelegramSendAdapter";
 import type { DeliveryProgressPanel } from "../ui/DeliveryProgressPanel";
 import type { Logger } from "../utils/logger";
@@ -57,7 +61,7 @@ export class DeliveryCoordinator {
     const context: DeliveryContext = {
       sourcePayload,
       batch: new DeliveryBatch(recipients, sourcePayload.units.length),
-      sourceRecipient,
+      sourceRecipient: snapshotRecipient(sourceRecipient),
       leftSourceChat: false,
       controller: new AbortController(),
       running: null,
@@ -184,7 +188,11 @@ export class DeliveryCoordinator {
     }
     context.batch.beginNavigation(peerKey);
     this.progress.update(context.batch.snapshot());
-    const navigation = await this.navigator.navigate(recipient, context.controller.signal);
+    const navigation = await this.navigator.navigate(
+      recipient,
+      context.controller.signal,
+      "destination",
+    );
     if (context.batch.isCancelRequested()) {
       context.batch.returnCurrentToPending();
       return false;
@@ -435,26 +443,55 @@ export class DeliveryCoordinator {
   }
 
   private async restoreSourceChat(context: DeliveryContext): Promise<void> {
-    const activePeer = findActiveComposerContext()?.peerId ?? null;
-    if (!context.leftSourceChat && (!activePeer || activePeer === context.sourceRecipient.peerKey)) {
+    const activeComposer = findActiveComposerContext();
+    const activePeer = activeComposer?.peerId ?? null;
+    if (
+      activeComposer &&
+      activePeer === context.sourceRecipient.peerKey &&
+      hasIndependentActivePeerProof(activeComposer, context.sourceRecipient.peerKey)
+    ) {
+      context.leftSourceChat = false;
+      this.log.info("Source chat restoration skipped after exact active-peer proof.", {
+        peerKey: context.sourceRecipient.peerKey,
+        intent: "source-restore",
+      });
       return;
     }
+    this.log.info("Source chat restoration started.", {
+      peerKey: context.sourceRecipient.peerKey,
+      intent: "source-restore",
+      activePeer,
+      leftSourceChat: context.leftSourceChat,
+    });
     try {
       const result = await this.navigator.navigate(
         context.sourceRecipient,
         new AbortController().signal,
+        "source-restore",
       );
       if (!result.success) {
         const detail = `Source chat restoration could not be confirmed: ${result.message}`;
         this.recordSafetyFailure(context, detail);
+        this.log.warn("Source chat restoration failed exact peer proof.", {
+          peerKey: context.sourceRecipient.peerKey,
+          intent: "source-restore",
+        });
         this.log.error("Failed to restore the source chat after delivery batch.", result.message);
         return;
       }
       context.leftSourceChat = false;
+      this.log.info("Source chat restoration proved exact peer and composer.", {
+        peerKey: context.sourceRecipient.peerKey,
+        intent: "source-restore",
+      });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Unknown navigation error.";
       const detail = `Source chat restoration threw before confirmation: ${reason}`;
       this.recordSafetyFailure(context, detail, error);
+      this.log.warn("Source chat restoration threw before exact peer proof.", {
+        peerKey: context.sourceRecipient.peerKey,
+        intent: "source-restore",
+      });
       this.log.error("Source-chat restoration threw after delivery batch.", error);
     }
   }

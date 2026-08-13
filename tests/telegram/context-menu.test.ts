@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CLEAN_FORWARD_RUNTIME_FINGERPRINT } from "../../src/app/CleanForwardRuntime";
 import { ContextMenuIntegration } from "../../src/telegram/TelegramContextMenuIntegration";
 import { createLogger } from "../helpers";
 
@@ -73,6 +74,35 @@ describe("ContextMenuIntegration", () => {
     action.click();
     expect(handler).toHaveBeenCalledTimes(1);
     expect(oldHandler).not.toHaveBeenCalled();
+  });
+
+  it("reclaims an action owned by another integration instance", () => {
+    const { items } = menuFixture(["Forward"]);
+    const firstHandler = vi.fn();
+    new ContextMenuIntegration(createLogger()).ensureAction(items, firstHandler);
+    const staleAction = items.querySelector<HTMLElement>(
+      "[data-clean-forward-context-action]",
+    )!;
+
+    const secondHandler = vi.fn();
+    new ContextMenuIntegration(createLogger()).ensureAction(items, secondHandler);
+    const currentAction = items.querySelector<HTMLElement>(
+      "[data-clean-forward-context-action]",
+    )!;
+
+    expect(currentAction).not.toBe(staleAction);
+    expect(staleAction.isConnected).toBe(false);
+    expect(items.querySelectorAll("[data-clean-forward-context-action]")).toHaveLength(1);
+    expect(currentAction.getAttribute("data-clean-forward-context-action")).toBe(
+      CLEAN_FORWARD_RUNTIME_FINGERPRINT,
+    );
+    expect(currentAction.getAttribute("data-clean-forward-runtime-owner")).toBe(
+      CLEAN_FORWARD_RUNTIME_FINGERPRINT,
+    );
+    currentAction.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+    currentAction.click();
+    expect(secondHandler).toHaveBeenCalledOnce();
+    expect(firstHandler).not.toHaveBeenCalled();
   });
 
   it("runs the action from primary pointerdown", () => {

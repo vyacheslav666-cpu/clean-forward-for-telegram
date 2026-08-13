@@ -4,6 +4,10 @@ import type {
   CapturedTextEntity,
 } from "../domain/TransferableContent";
 import type { PollTemplateContent } from "../domain/TransferUnit";
+import type { SourceChatDescriptor } from "../domain/SourceMessageDescriptor";
+
+/** Immutable navigation target captured synchronously before source bytes are loaded. */
+export type TelegramSourceTargetSnapshot = SourceChatDescriptor;
 
 /** Telegram album metadata is accepted only when a verified model bridge proves completeness. */
 export type TelegramMessageGroupSnapshot =

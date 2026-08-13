@@ -7,6 +7,9 @@ const COMPOSER_CONTAINER_SELECTOR = ".chat-input-main";
 const MAIN_CHATS_SELECTOR = "#column-center > .chats-container";
 const ACTIVE_MAIN_CHAT_SELECTOR = ":scope > .chat.tabs-tab.active";
 const OWNED_COMPOSER_CONTAINER_SELECTOR = ":scope > .chat-input.chat-input-main";
+const ACTIVE_DIALOG_ROW_IDENTITY_SELECTOR =
+  ".tabs-tab.chatlist-parts.active a.row.chatlist-chat.active[data-peer-id]";
+const TOPBAR_PEER_IDENTITY_SELECTOR = ".topbar .person-avatar[data-peer-id]";
 
 /** Verified DOM context for the currently active destination chat. */
 export interface TelegramComposerContext {
@@ -76,6 +79,33 @@ export function findActiveComposerContext(): TelegramComposerContext | null {
 /** Confirms that Telegram still points at the peer captured before an async operation. */
 export function isActivePeer(peerId: string): boolean {
   return findActiveComposerContext()?.peerId === peerId;
+}
+
+/**
+ * Requires production peer identity independent from the composer binding.
+ *
+ * TWeb can retain a stale composer briefly while another chat already owns the visible topbar.
+ * Search-only chats may have no active sidebar row, so a same-chat topbar avatar is the fallback.
+ */
+export function hasIndependentActivePeerProof(
+  context: TelegramComposerContext,
+  expectedPeerId: string,
+): boolean {
+  if (!context.chat) {
+    return true;
+  }
+
+  const activeRows = Array.from(
+    document.querySelectorAll<HTMLElement>(ACTIVE_DIALOG_ROW_IDENTITY_SELECTOR),
+  );
+  if (activeRows.length === 1 && activeRows[0]?.dataset.peerId === expectedPeerId) {
+    return true;
+  }
+
+  const topbarPeers = Array.from(
+    context.chat.querySelectorAll<HTMLElement>(TOPBAR_PEER_IDENTITY_SELECTOR),
+  ).map((element) => element.dataset.peerId?.trim() ?? "").filter(Boolean);
+  return topbarPeers.length === 1 && topbarPeers[0] === expectedPeerId;
 }
 
 /** Reports whether the current composer contains a user-visible draft. */

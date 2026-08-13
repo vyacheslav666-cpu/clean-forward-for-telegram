@@ -49,6 +49,28 @@ function binary(label: string): ReturnType<typeof createBinaryMediaContent> {
 }
 
 describe("generalized MessagePayload", () => {
+  it("preserves the immutable source navigation query through payload normalization", () => {
+    const sourceWithLocator = createSourceChatDescriptor(
+      "42",
+      "Source chat",
+      "@exact_source_query",
+    );
+    const descriptor = message(9, 0);
+    const payload = createMessagePayload({
+      operationId: "operation-source-locator",
+      source: sourceWithLocator,
+      messages: [descriptor],
+      units: [createTextTransferUnit([descriptor], createPlainTextContent("fixture"))],
+    });
+
+    expect(payload.source).toEqual({
+      peerKey: "42",
+      title: "Source chat",
+      searchQuery: "@exact_source_query",
+    });
+    expect(Object.isFrozen(payload.source)).toBe(true);
+  });
+
   it("represents one text source and migrates it to the existing composer DTO", () => {
     const descriptor = message(10, 0);
     const payload = migrateTelegramDeliveryPayload({

@@ -9,7 +9,10 @@ import type {
   TelegramSelectionDomAdapter,
 } from "../telegram/TelegramSelectionDomAdapter";
 import type { TelegramSelectionIntegration } from "../telegram/TelegramSelectionIntegration";
-import type { TelegramSourceSnapshot } from "../telegram/TelegramSourceSnapshot";
+import type {
+  TelegramSourceSnapshot,
+  TelegramSourceTargetSnapshot,
+} from "../telegram/TelegramSourceSnapshot";
 import type { Logger } from "../utils/logger";
 import { observeDom, type DomObservation } from "../utils/observeDom";
 
@@ -90,14 +93,17 @@ export class CleanForwardController {
     }
 
     this.contextMenu.ensureAction(context.menu, () => {
-      const snapshot = this.dom.readMessageSnapshot(context.message);
+      // Both values are copied synchronously while the context menu is still bound to its active
+      // source chat. Media capture may await later without rereading a different Telegram peer.
+      const sourceTarget = context.sourceTarget;
+      const snapshot = this.dom.readMessageSnapshot(context.message, sourceTarget.peerKey);
       this.log.info("CleanForwardController получил выбор контекстного пункта.", {
         messageConnected: context.message.isConnected,
         snapshotFound: Boolean(snapshot),
       });
       context.dismiss();
       if (snapshot) {
-        void this.captureSnapshots([snapshot], null);
+        void this.captureSnapshots([snapshot], sourceTarget, null);
       }
     });
   }
@@ -113,13 +119,14 @@ export class CleanForwardController {
       if (selected.kind === "rejected") {
         return;
       }
-      void this.captureSnapshots(selected.snapshots, context);
+      void this.captureSnapshots(selected.snapshots, context.sourceTarget, context);
     });
   }
 
   /** Completes one atomic bundle before dismissing source UI or opening recipient selection. */
   private async captureSnapshots(
     snapshots: readonly TelegramSourceSnapshot[],
+    sourceTarget: TelegramSourceTargetSnapshot,
     selectionContext: TelegramSelectionContext | null,
   ): Promise<void> {
     if (this.captureSession) {
@@ -136,7 +143,11 @@ export class CleanForwardController {
       mode: selectionContext ? "native-selection" : "context-menu",
     });
     try {
-      const result = await this.extractor.captureSnapshots(snapshots, session.controller.signal);
+      const result = await this.extractor.captureSnapshots(
+        snapshots,
+        sourceTarget,
+        session.controller.signal,
+      );
       if (session.controller.signal.aborted || this.captureSession !== session) {
         return;
       }

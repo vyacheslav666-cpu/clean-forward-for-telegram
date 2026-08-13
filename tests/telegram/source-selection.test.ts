@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { CLEAN_FORWARD_RUNTIME_FINGERPRINT } from "../../src/app/CleanForwardRuntime";
 import { TelegramDomAdapter } from "../../src/telegram/TelegramDomAdapter";
 import { TelegramSelectionDomAdapter } from "../../src/telegram/TelegramSelectionDomAdapter";
 import { TelegramSelectionIntegration } from "../../src/telegram/TelegramSelectionIntegration";
-import { createLogger, installComposer } from "../helpers";
+import { createLogger, installComposer, installDialogRow } from "../helpers";
 
 interface SelectionFixture {
   readonly history: HTMLElement;
@@ -72,6 +73,20 @@ function createAdapters() {
 }
 
 describe("Telegram native source selection", () => {
+  it("captures one immutable source navigation target with the selection context", () => {
+    selectionFixture(1);
+    const row = installDialogRow("20", "Selection source");
+    row.classList.add("active");
+    const { adapter } = createAdapters();
+
+    expect(adapter.findActiveContext()?.sourceTarget).toEqual({
+      peerKey: "20",
+      title: "Selection source",
+      searchQuery: "Selection source",
+    });
+    expect(Object.isFrozen(adapter.findActiveContext()?.sourceTarget)).toBe(true);
+  });
+
   it("reads several selected identities and sorts them independently from DOM click order", () => {
     const fixture = selectionFixture(3);
     selectedMessage(fixture.history, 30, "third");
@@ -164,6 +179,41 @@ describe("Telegram native source selection", () => {
     action.click();
     expect(handler).toHaveBeenCalledOnce();
     expect(nativeForward).not.toHaveBeenCalled();
+  });
+
+  it("reclaims an action owned by another integration instance", () => {
+    const fixture = selectionFixture(1);
+    selectedMessage(fixture.history, 10, "selected");
+    const logger = createLogger();
+    const adapter = new TelegramSelectionDomAdapter(new TelegramDomAdapter(logger), logger);
+    const context = adapter.findActiveContext()!;
+    const firstHandler = vi.fn();
+    new TelegramSelectionIntegration(logger).ensureAction(context, firstHandler);
+    const staleAction = fixture.toolbar.querySelector<HTMLElement>(
+      "[data-clean-forward-selection-action]",
+    )!;
+
+    const secondHandler = vi.fn();
+    new TelegramSelectionIntegration(logger).ensureAction(context, secondHandler);
+    const currentAction = fixture.toolbar.querySelector<HTMLElement>(
+      "[data-clean-forward-selection-action]",
+    )!;
+
+    expect(currentAction).not.toBe(staleAction);
+    expect(staleAction.isConnected).toBe(false);
+    expect(fixture.toolbar.querySelectorAll("[data-clean-forward-selection-action]")).toHaveLength(
+      1,
+    );
+    expect(currentAction.getAttribute("data-clean-forward-selection-action")).toBe(
+      CLEAN_FORWARD_RUNTIME_FINGERPRINT,
+    );
+    expect(currentAction.getAttribute("data-clean-forward-runtime-owner")).toBe(
+      CLEAN_FORWARD_RUNTIME_FINGERPRINT,
+    );
+    currentAction.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+    currentAction.click();
+    expect(secondHandler).toHaveBeenCalledOnce();
+    expect(firstHandler).not.toHaveBeenCalled();
   });
 
   it("uses Telegram's count button to cancel native selection without synthetic Escape", () => {

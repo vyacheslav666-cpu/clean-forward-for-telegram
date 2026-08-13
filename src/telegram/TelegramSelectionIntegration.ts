@@ -1,8 +1,10 @@
 /** Adds a Clean Forward action to Telegram's verified native selection toolbar. */
+import { CLEAN_FORWARD_RUNTIME_FINGERPRINT } from "../app/CleanForwardRuntime";
 import type { Logger } from "../utils/logger";
 import type { TelegramSelectionContext } from "./TelegramSelectionDomAdapter";
 
 const ACTION_ATTRIBUTE = "data-clean-forward-selection-action";
+const ACTION_OWNER_ATTRIBUTE = "data-clean-forward-runtime-owner";
 const ACTION_CLASS = "clean-forward-selection-action";
 const NATIVE_FORWARD_CLASS = "selection-container-forward";
 const ACTION_LABEL = "Отправить как новое";
@@ -20,14 +22,30 @@ export class TelegramSelectionIntegration {
 
   /** Ensures a reused Telegram toolbar contains exactly one current action callback. */
   public ensureAction(context: TelegramSelectionContext, onSelect: () => void): void {
-    const existing = context.toolbar.querySelector<HTMLElement>(`[${ACTION_ATTRIBUTE}]`);
-    if (existing) {
-      const state = this.states.get(existing);
-      if (state) {
-        state.onSelect = onSelect;
-        state.activated = false;
+    const existingActions = Array.from(
+      context.toolbar.querySelectorAll<HTMLElement>(`[${ACTION_ATTRIBUTE}]`),
+    );
+    const ownedAction = existingActions.find((candidate) => this.states.has(candidate));
+    if (ownedAction) {
+      for (const staleAction of existingActions) {
+        if (staleAction !== ownedAction) staleAction.remove();
       }
+      const state = this.states.get(ownedAction)!;
+      state.onSelect = onSelect;
+      state.activated = false;
+      this.stampOwner(ownedAction);
       return;
+    }
+
+    if (existingActions.length > 0) {
+      const previousOwners = existingActions.map(
+        (action) => action.getAttribute(ACTION_OWNER_ATTRIBUTE) ?? "legacy/unknown",
+      );
+      for (const staleAction of existingActions) staleAction.remove();
+      this.log.info("Удалён stale selection action предыдущего runtime.", {
+        previousOwners,
+        owner: CLEAN_FORWARD_RUNTIME_FINGERPRINT,
+      });
     }
 
     // cloneNode preserves Telegram's current button presentation but deliberately copies no
@@ -36,7 +54,7 @@ export class TelegramSelectionIntegration {
     action.classList.remove(NATIVE_FORWARD_CLASS);
     action.classList.add(ACTION_CLASS);
     action.removeAttribute("disabled");
-    action.setAttribute(ACTION_ATTRIBUTE, "");
+    this.stampOwner(action);
     action.setAttribute("aria-label", ACTION_LABEL);
     action.setAttribute("title", ACTION_LABEL);
     if (action instanceof HTMLButtonElement) {
@@ -76,5 +94,10 @@ export class TelegramSelectionIntegration {
 
     context.nativeForward.before(action);
     this.log.info("Clean Forward action добавлен в native selection toolbar.");
+  }
+
+  private stampOwner(action: HTMLElement): void {
+    action.setAttribute(ACTION_ATTRIBUTE, CLEAN_FORWARD_RUNTIME_FINGERPRINT);
+    action.setAttribute(ACTION_OWNER_ATTRIBUTE, CLEAN_FORWARD_RUNTIME_FINGERPRINT);
   }
 }

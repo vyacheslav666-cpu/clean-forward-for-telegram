@@ -80,7 +80,11 @@ export function createMessagePayload(input: {
     throw new Error("Transfer bundle requires an operation id, messages, and units.");
   }
 
-  const source = createSourceChatDescriptor(input.source.peerKey, input.source.title);
+  const source = createSourceChatDescriptor(
+    input.source.peerKey,
+    input.source.title,
+    input.source.searchQuery,
+  );
   const messages = Object.freeze(
     input.messages
       .map(createSourceMessageDescriptor)
@@ -107,7 +111,11 @@ export function createUnsupportedSource(input: {
   readonly messages: readonly SourceMessageDescriptor[];
   readonly reason: UnsupportedSource["reason"];
 }): UnsupportedSource {
-  const source = createSourceChatDescriptor(input.source.peerKey, input.source.title);
+  const source = createSourceChatDescriptor(
+    input.source.peerKey,
+    input.source.title,
+    input.source.searchQuery,
+  );
   const messages = Object.freeze(
     input.messages
       .map(createSourceMessageDescriptor)
