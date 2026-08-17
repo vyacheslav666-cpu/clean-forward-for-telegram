@@ -11,7 +11,7 @@
 ## Пользовательский сценарий
 
 1. Откройте контекстное меню одного сообщения либо выделите несколько сообщений в нативном selection mode Telegram.
-2. Нажмите «Отправить как новое».
+2. Нажмите «Отправить как новое». В selection mode пункт называется «Отправить как новые» и доступен на двух поверхностях: в нижней панели выделения рядом с нативным Forward и в контекстном меню выделения, рядом с `Forward selected`. Обе работают над всем выбранным набором, а не над одним долгонажатым сообщением.
 3. Выберите одного или нескольких получателей. Порядок выбора сохраняется.
 4. Нажмите «Далее» один раз.
 5. Clean Forward последовательно доставит весь bundle каждому получателю.
@@ -60,7 +60,8 @@
 - user retry возобновляет только `pending`/`failed-before-send` pairs и не повторяет `sent`/`unknown-after-send`;
 - Cancel до Send очищает только подготовленное Clean Forward содержимое; после Send сначала завершается reconciliation;
 - source-chat restore выполняется после любого terminal outcome и не переписывает delivery statuses при собственной ошибке;
-- Escape перехватывается только верхним Clean Forward overlay и не используется для управления Telegram chat.
+- Escape перехватывается только верхним Clean Forward overlay и не используется для управления Telegram chat;
+- общий MutationObserver вызывается на каждой пачке мутаций Telegram, поэтому вне selection mode реконсиляция обязана оставаться reflow-free: признаки выделения проверяются дешёвыми selector-совпадениями до любого разрешения composer, которое доходит до `getComputedStyle`. Нарушение этого порядка возвращает layout thrashing, из-за которого Telegram Web K переставал загружаться.
 
 ## Item-level state
 
@@ -84,6 +85,7 @@ Recipient status вычисляется из вложенных item/group state
 - formatted drafts, reply/edit/forward state и существующий attachment preview не изменяются автоматически;
 - для album отклоняются incomplete group, несовместимое native partitioning, animation внутри группы и caption boundaries, которые нельзя сохранить;
 - browser E2E с авторизованной сессией не входит в автоматическую suite; реальные Send необходимо проверять только в контролируемых чатах.
+- DOM-контракт должен сверяться с исходным кодом Web K, а не с записями ручного исследования: три селектора уже отличались от реального кода и молча отключали интеграцию именно на мобильных и в selection mode, при полностью зелёной suite. Фикстуры воспроизводят предположения автора, поэтому сами по себе несовпадение контракта не ловят.
 - production bootstrap пока не предоставляет verified read-only Telegram model bridge; video/document/audio/album strategies не являются production support.
 
 ## Установка
@@ -101,8 +103,8 @@ npm run validate
 
 После новой сборки нужно повторно заменить код в Tampermonkey: уже установленная
 копия не синхронизируется с локальным `dist` автоматически. Текущий релиз —
-`0.1.3`; версия показывается не только в userscript header, но и в заголовках
-picker/progress UI. Если там нет `v0.1.3`, новый runtime не запущен.
+`0.1.5`; версия показывается не только в userscript header, но и в заголовках
+picker/progress UI. Если там нет `v0.1.5`, новый runtime не запущен.
 
 Сборка содержит header с `@match https://web.telegram.org/k/*`.
 
@@ -141,6 +143,8 @@ Payload и binary Blob живут только в памяти. `localStorage`, 
 
 - 1 text → 1 recipient и 1 text → 2 recipients;
 - 3 ordered text messages → 1 и 2 recipients;
+- selection mode: смешанный набор text, photo и photo + caption, запущенный и из нижней панели выделения, и из контекстного меню выделения;
+- холодная перезагрузка вкладки с установленным userscript: Telegram Web K должен полностью загрузиться без зависания;
 - source chat также выбран recipient;
 - photo и photo + caption; video/document/audio — только после подключения verified production model bridge;
 - compatible photo/video album — только после подключения model bridge: один native Send и полный grouped result;

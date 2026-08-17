@@ -1,7 +1,10 @@
 /** Coordinates context-menu integration, extraction, and the recipient flow entrypoint. */
 import type { PendingTransfer } from "../domain/PendingTransfer";
 import type { RecipientPickerController } from "../recipient/RecipientPickerController";
-import type { ContextMenuIntegration } from "../telegram/TelegramContextMenuIntegration";
+import {
+  SELECTION_ACTION_LABEL,
+  type ContextMenuIntegration,
+} from "../telegram/TelegramContextMenuIntegration";
 import type { MessageExtractor } from "../telegram/MessageExtractor";
 import type { TelegramDomAdapter } from "../telegram/TelegramDomAdapter";
 import type {
@@ -44,8 +47,7 @@ export class CleanForwardController {
 
     this.dom.startTrackingContextTargets(() => this.scheduleReconciliation());
     this.observation = observeDom(document.documentElement, () => this.handleDomChanged());
-    this.reconcileContextMenu();
-    this.reconcileSelectionToolbar();
+    this.reconcileActions();
     this.log.info("Userscript инициализирован.");
   }
 
@@ -68,27 +70,60 @@ export class CleanForwardController {
     this.reconciliationQueued = true;
     queueMicrotask(() => {
       this.reconciliationQueued = false;
-      this.reconcileContextMenu();
+      this.reconcileActions();
     });
   }
 
   /** Shares the one MutationObserver between menu reconciliation and recipient navigation. */
   private handleDomChanged(): void {
-    const selectionContext = this.captureSession?.selectionContext;
-    if (selectionContext && !this.selectionDom.isContextActive(selectionContext)) {
+    const captured = this.captureSession?.selectionContext;
+    if (captured && !this.selectionDom.isContextActive(captured)) {
       // Exiting Telegram selection invalidates the capture intent even though detached snapshots
       // themselves remain safe; opening the picker after an explicit user cancel would be wrong.
       this.captureSession?.controller.abort();
     }
-    this.reconcileContextMenu();
-    this.reconcileSelectionToolbar();
+    this.reconcileActions();
     this.recipients.notifyDomChanged();
   }
 
+  /**
+   * Resolves the native selection state once and reconciles every surface against it.
+   *
+   * Both entry surfaces must agree on the same selection context: reading it twice per batch would
+   * double this method's cost on the hot observer path and could pair a menu with a toolbar from
+   * two different Telegram states.
+   */
+  private reconcileActions(): void {
+    const selection = this.selectionDom.findActiveContext();
+    if (selection) {
+      this.selectionIntegration.ensureAction(selection, () =>
+        this.beginSelectionCapture(selection));
+    }
+    this.reconcileContextMenu(selection);
+  }
+
   /** Reconciles the custom action after Telegram creates or reuses its menu. */
-  private reconcileContextMenu(): void {
+  private reconcileContextMenu(selection: TelegramSelectionContext | null): void {
     const context = this.dom.findOpenMessageContext();
     if (!context) {
+      return;
+    }
+
+    // While selection mode owns the bubbles, Telegram's menu acts on the selected set rather than
+    // the long-pressed bubble. Following that meaning keeps one message from being sent when the
+    // visible menu promises the whole selection.
+    if (selection) {
+      this.contextMenu.ensureAction(
+        context.menu,
+        () => {
+          const selected = this.selectionDom.readSelectedSnapshots(selection);
+          context.dismiss();
+          if (selected.kind === "captured") {
+            void this.captureSnapshots(selected.snapshots, selection.sourceTarget, selection);
+          }
+        },
+        { label: SELECTION_ACTION_LABEL },
+      );
       return;
     }
 
@@ -108,19 +143,13 @@ export class CleanForwardController {
     });
   }
 
-  /** Reconciles the action only for Telegram's verified normal-chat selection toolbar. */
-  private reconcileSelectionToolbar(): void {
-    const context = this.selectionDom.findActiveContext();
-    if (!context) {
+  /** Starts one bundle from Telegram's verified native multi-selection. */
+  private beginSelectionCapture(context: TelegramSelectionContext): void {
+    const selected = this.selectionDom.readSelectedSnapshots(context);
+    if (selected.kind === "rejected") {
       return;
     }
-    this.selectionIntegration.ensureAction(context, () => {
-      const selected = this.selectionDom.readSelectedSnapshots(context);
-      if (selected.kind === "rejected") {
-        return;
-      }
-      void this.captureSnapshots(selected.snapshots, context.sourceTarget, context);
-    });
+    void this.captureSnapshots(selected.snapshots, context.sourceTarget, context);
   }
 
   /** Completes one atomic bundle before dismissing source UI or opening recipient selection. */

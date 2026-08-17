@@ -5,14 +5,28 @@ import type { Logger } from "../utils/logger";
 const ACTION_ATTRIBUTE = "data-clean-forward-context-action";
 const ACTION_OWNER_ATTRIBUTE = "data-clean-forward-runtime-owner";
 const ACTION_LABEL = "Отправить как новое";
+/** Plural wording marks the multi-message bundle so the two menus are never confused. */
+export const SELECTION_ACTION_LABEL = "Отправить как новые";
 const NATIVE_ITEM_SELECTOR = ":scope > .btn-menu-item";
 const NATIVE_ITEM_TEXT_SELECTOR = ".btn-menu-item-text";
-const FORWARD_LABEL = "Forward";
+/**
+ * Telegram renders a different menu once selection mode owns the bubbles, so both anchors are
+ * accepted. Matching by label keeps the action next to native forwarding in either menu without
+ * ever invoking it.
+ */
+const FORWARD_LABELS: readonly string[] = ["Forward", "Forward selected"];
 const MENU_VIEWPORT_PADDING = 8;
+
+/** Per-menu options that may change between reconciliations of one reused Telegram menu. */
+export interface ContextActionOptions {
+  /** Visible wording; it switches when the same menu changes between single and selection mode. */
+  readonly label?: string;
+}
 
 interface ContextActionState {
   onSelect: () => void;
   activated: boolean;
+  label: HTMLElement;
 }
 
 /** Adds one isolated action to an already verified Telegram context-menu element. */
@@ -24,7 +38,11 @@ export class ContextMenuIntegration {
   /**
    * Ensures that a menu has exactly one action and refreshes its callback when Telegram reuses DOM.
    */
-  public ensureAction(menu: HTMLElement, onSelect: () => void): void {
+  public ensureAction(
+    menu: HTMLElement,
+    onSelect: () => void,
+    { label: labelText = ACTION_LABEL }: ContextActionOptions = {},
+  ): void {
     const existingItems = Array.from(
       menu.querySelectorAll<HTMLElement>(`[${ACTION_ATTRIBUTE}]`),
     );
@@ -36,6 +54,11 @@ export class ContextMenuIntegration {
       const state = this.states.get(ownedItem)!;
       state.onSelect = onSelect;
       state.activated = false;
+      // Entering or leaving selection mode reuses the same menu element, so the wording must follow
+      // the callback it now describes instead of the mode that first created the item.
+      if (state.label.textContent !== labelText) {
+        state.label.textContent = labelText;
+      }
       this.stampOwner(ownedItem);
       this.log.debug("Контекстный пункт найден повторно; callback обновлён.", {
         connected: ownedItem.isConnected,
@@ -64,10 +87,10 @@ export class ContextMenuIntegration {
 
     const label = document.createElement("span");
     label.classList.add("btn-menu-item-text");
-    label.textContent = ACTION_LABEL;
+    label.textContent = labelText;
     item.append(icon, label);
 
-    const state: ContextActionState = { onSelect, activated: false };
+    const state: ContextActionState = { onSelect, activated: false, label };
     this.states.set(item, state);
     this.log.info("Создан пункт контекстного меню.");
 
@@ -116,9 +139,13 @@ export class ContextMenuIntegration {
     this.log.info("Listeners контекстного пункта навешаны.");
 
     const forwardItem = Array.from(menu.querySelectorAll<HTMLElement>(NATIVE_ITEM_SELECTOR)).find(
-      (candidate) =>
-        candidate.querySelector<HTMLElement>(NATIVE_ITEM_TEXT_SELECTOR)?.textContent?.trim() ===
-        FORWARD_LABEL,
+      (candidate) => {
+        const text = candidate
+          .querySelector<HTMLElement>(NATIVE_ITEM_TEXT_SELECTOR)
+          ?.textContent
+          ?.trim();
+        return text !== undefined && FORWARD_LABELS.includes(text);
+      },
     );
     if (forwardItem) {
       forwardItem.after(item);

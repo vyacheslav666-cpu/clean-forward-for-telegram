@@ -8,7 +8,11 @@ import type {
   ComposerDraftTransaction,
   ComposerDraftTransactionStart,
 } from "./ComposerDraftTransaction";
-import { findActiveComposerContext, isComposerEmpty } from "./TelegramComposerDom";
+import {
+  findActiveComposerContext,
+  isComposerEmpty,
+  type ActiveComposerLookupOptions,
+} from "./TelegramComposerDom";
 import { insertTextNatively } from "./nativeTextEditing";
 import { readTelegramText } from "./readTelegramText";
 import type { TelegramMessageSnapshot } from "./TelegramSourceSnapshot";
@@ -21,9 +25,16 @@ const MESSAGE_TIME_SELECTOR = ".time";
 const MESSAGE_LAYOUT_FIX_SELECTOR = ".clearfix";
 const MESSAGE_PHOTO_SELECTOR = "img.media-photo";
 const MESSAGE_ATTACHMENT_SELECTOR = ".attachment";
-const ACTIVE_MESSAGE_MENU_SELECTOR =
-  ".btn-menu.contextmenu.active.has-items-wrapper .btn-menu-items";
-const ACTIVE_MESSAGE_MENU_WRAPPER_SELECTOR = ".btn-menu.contextmenu.active.has-items-wrapper";
+const ACTIVE_MESSAGE_MENU_WRAPPER_SELECTOR = ".btn-menu.contextmenu.active";
+/**
+ * Web K appends menu items straight into `.btn-menu`. It only moves them into this wrapper (and
+ * adds `has-items-wrapper`) when a reactions bar is attached, which happens on desktop and never
+ * in selection mode. Requiring the wrapper therefore matched a single desktop case and silently
+ * disabled the action on mobile and for every multi-selection menu.
+ */
+const MENU_ITEMS_WRAPPER_SELECTOR = ".btn-menu-items";
+const MENU_ITEM_SELECTOR = ".btn-menu-item";
+/** Removed from current Web K, which closes menus through a document-level overlay handler. */
 const MENU_OVERLAY_SELECTOR = ".btn-menu-overlay";
 const ACTIVE_MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
 const REPLY_EDIT_OR_FORWARD_SELECTOR = ".reply-wrapper";
@@ -35,6 +46,14 @@ const ACTIVE_CHAT_TITLE_SELECTOR = ".topbar .peer-title, .topbar .user-title";
 const PEER_TITLE_SELECTOR = ".peer-title";
 const NATIVE_SEARCH_INPUT_SELECTOR =
   '#column-left .sidebar-header input.input-search-input[type="text"]';
+
+/**
+ * Source identity is read, never written, so a composer hidden behind the selection plate still
+ * proves which peer owns the bubble. Composer writes below deliberately keep the strict lookup.
+ */
+const READ_ONLY_COMPOSER_LOOKUP: ActiveComposerLookupOptions = Object.freeze({
+  allowHiddenComposer: true,
+});
 
 /** A verified message element paired with its currently open context menu. */
 export interface TelegramMessageContext {
@@ -53,6 +72,7 @@ export class TelegramDomAdapter {
   private lastContextMessage: HTMLElement | null = null;
   private lastContextSourceTarget: SourceChatDescriptor | null = null;
   private contextListener: ((event: MouseEvent) => void) | null = null;
+  private pointerListener: ((event: PointerEvent) => void) | null = null;
   private lastLoggedMessageId: string | null = null;
 
   public constructor(private readonly log: Logger) {}
@@ -81,6 +101,27 @@ export class TelegramDomAdapter {
       onContextRequest();
     };
     document.addEventListener("contextmenu", this.contextListener, true);
+
+    // Web K opens the menu from its own 400 ms long-tap timer on Apple touch devices and never
+    // dispatches `contextmenu` there, so a touch press is the only moment the source bubble is
+    // still known. Mouse input keeps the contextmenu-only behaviour it already had.
+    this.pointerListener = (event: PointerEvent) => {
+      if (event.pointerType === "mouse") {
+        return;
+      }
+      const target = event.target instanceof Element ? event.target : null;
+      const message = target?.closest<HTMLElement>(MESSAGE_IDENTITY_SELECTOR) ?? null;
+      if (!message) {
+        return;
+      }
+      this.lastContextMessage = message;
+      this.lastContextSourceTarget = this.readSourceTargetSnapshot(
+        message.dataset.peerId?.trim() ?? "",
+        message,
+      );
+      this.lastLoggedMessageId = null;
+    };
+    document.addEventListener("pointerdown", this.pointerListener, true);
   }
 
   /** Removes the context listener installed by startTrackingContextTargets. */
@@ -90,6 +131,10 @@ export class TelegramDomAdapter {
     }
 
     document.removeEventListener("contextmenu", this.contextListener, true);
+    if (this.pointerListener) {
+      document.removeEventListener("pointerdown", this.pointerListener, true);
+      this.pointerListener = null;
+    }
     this.contextListener = null;
     this.lastContextMessage = null;
     this.lastContextSourceTarget = null;
@@ -106,7 +151,7 @@ export class TelegramDomAdapter {
 
     const message = this.lastContextMessage;
     const sourceTarget = this.lastContextSourceTarget;
-    const menuItems = document.querySelector<HTMLElement>(ACTIVE_MESSAGE_MENU_SELECTOR);
+    const menuItems = this.findOpenMenuItemsContainer();
 
     if (
       !message?.isConnected ||
@@ -145,7 +190,7 @@ export class TelegramDomAdapter {
     if (!peerKey || (sourceMessage && !this.isMessageBoundToSource(sourceMessage, peerKey))) {
       return null;
     }
-    const composer = findActiveComposerContext();
+    const composer = findActiveComposerContext(READ_ONLY_COMPOSER_LOOKUP);
     if (composer && composer.peerId !== peerKey) {
       return null;
     }
@@ -298,7 +343,7 @@ export class TelegramDomAdapter {
     if (message.dataset.peerId?.trim() !== peerKey) {
       return false;
     }
-    const composer = findActiveComposerContext();
+    const composer = findActiveComposerContext(READ_ONLY_COMPOSER_LOOKUP);
     if (!composer) {
       // Legacy/fallback markup cannot prove chat containment, but the message identity remains
       // usable. When TWeb exposes an active main chat, the stricter checks below are mandatory.
@@ -422,16 +467,41 @@ export class TelegramDomAdapter {
     return Number.isFinite(timestamp) ? timestamp : null;
   }
 
+  /**
+   * Returns the element that directly parents Telegram's menu items.
+   *
+   * Exactly one active context menu must be present; a submenu or a second menu makes the pairing
+   * with `lastContextMessage` ambiguous, so this fails closed instead of guessing.
+   */
+  private findOpenMenuItemsContainer(): HTMLElement | null {
+    const menus = document.querySelectorAll<HTMLElement>(ACTIVE_MESSAGE_MENU_WRAPPER_SELECTOR);
+    if (menus.length !== 1) {
+      return null;
+    }
+
+    const menu = menus.item(0);
+    const container = menu.querySelector<HTMLElement>(MENU_ITEMS_WRAPPER_SELECTOR) ?? menu;
+    return container.querySelector(MENU_ITEM_SELECTOR) ? container : null;
+  }
+
   private dismissMessageMenu(menuItems: HTMLElement): boolean {
     const menu = menuItems.closest<HTMLElement>(ACTIVE_MESSAGE_MENU_WRAPPER_SELECTOR);
-    const overlay = menu?.previousElementSibling;
-    if (!(overlay instanceof HTMLElement) || !overlay.matches(MENU_OVERLAY_SELECTOR)) {
-      this.log.warn("Не найден scoped overlay контекстного меню Telegram.");
+    if (!menu) {
+      this.log.warn("Активное контекстное меню Telegram не найдено при закрытии.");
       return false;
     }
 
-    overlay.click();
-    const dismissed = !menu?.classList.contains("active");
+    const overlay = menu.previousElementSibling;
+    if (overlay instanceof HTMLElement && overlay.matches(MENU_OVERLAY_SELECTOR)) {
+      overlay.click();
+    } else {
+      // Current Web K has no per-menu overlay element: its controller closes a menu by dropping
+      // `active`. Repeating that exact class change is safer than synthesizing a document click,
+      // which every other Telegram handler would also receive.
+      menu.classList.remove("active");
+    }
+
+    const dismissed = !menu.classList.contains("active");
     this.log.info("Закрытие контекстного меню запрошено.", { dismissed });
     return dismissed;
   }

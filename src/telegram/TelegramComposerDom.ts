@@ -20,8 +20,23 @@ export interface TelegramComposerContext {
   readonly peerId: string;
 }
 
+/** Controls how strictly the message input itself must be visible. */
+export interface ActiveComposerLookupOptions {
+  /**
+   * Selection mode hides TWeb's message input while the selection plate owns the same container.
+   * Read-only source lookups must still resolve the peer there, so only the composer's own
+   * visibility rule is relaxed: containment, uniqueness, and a visible container still apply.
+   * Every path that writes into the composer must keep the default strict lookup.
+   */
+  readonly allowHiddenComposer?: boolean;
+}
+
 /** Returns only the real composer owned by TWeb's one active main chat pane. */
-export function findActiveComposerContext(): TelegramComposerContext | null {
+export function findActiveComposerContext(
+  { allowHiddenComposer = false }: ActiveComposerLookupOptions = {},
+): TelegramComposerContext | null {
+  const composerHidden = (composer: HTMLElement): boolean =>
+    !composer.isConnected || (!allowHiddenComposer && isHidden(composer));
   const mainChats = document.querySelector<HTMLElement>(MAIN_CHATS_SELECTOR);
   if (mainChats) {
     const activeChats = mainChats.querySelectorAll<HTMLElement>(ACTIVE_MAIN_CHAT_SELECTOR);
@@ -47,7 +62,7 @@ export function findActiveComposerContext(): TelegramComposerContext | null {
     if (
       !peerId ||
       composer.closest(".chat") !== chat ||
-      isHidden(composer) ||
+      composerHidden(composer) ||
       composer.getAttribute("aria-disabled") === "true"
     ) {
       return null;
@@ -69,7 +84,7 @@ export function findActiveComposerContext(): TelegramComposerContext | null {
     return null;
   }
 
-  if (isHidden(composer) || isHidden(container)) {
+  if (composerHidden(composer) || isHidden(container)) {
     return null;
   }
 

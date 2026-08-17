@@ -54,12 +54,22 @@ export class TelegramSelectionDomAdapter {
     private readonly log: Logger,
   ) {}
 
-  /** Finds one normal selection toolbar tied to the active peer-scoped composer. */
+  /**
+   * Finds one normal selection toolbar tied to the active peer-scoped composer.
+   *
+   * The application's shared MutationObserver calls this on every Telegram mutation batch, so the
+   * order of the guards is a performance contract, not a style choice: selector matching is cheap,
+   * while composer resolution reaches `getComputedStyle` and forces a synchronous style
+   * recalculation of the whole app. Checking selection markers first keeps every non-selection
+   * mutation — which is nearly all of them, including Telegram's entire startup — flush-free.
+   */
   public findActiveContext(): TelegramSelectionContext | null {
-    const wrappers = document.querySelectorAll<HTMLElement>(SELECTION_WRAPPER_SELECTOR);
     const histories = document.querySelectorAll<HTMLElement>(SELECTING_HISTORY_SELECTOR);
-    const composer = findActiveComposerContext();
-    if (wrappers.length !== 1 || histories.length !== 1 || !composer) {
+    if (histories.length !== 1) {
+      return null;
+    }
+    const wrappers = document.querySelectorAll<HTMLElement>(SELECTION_WRAPPER_SELECTOR);
+    if (wrappers.length !== 1) {
       return null;
     }
 
@@ -68,13 +78,18 @@ export class TelegramSelectionDomAdapter {
     const toolbar = wrapper.querySelector<HTMLElement>(SELECTION_TOOLBAR_SELECTOR);
     const nativeForward = toolbar?.querySelector<HTMLElement>(SELECTION_FORWARD_SELECTOR);
     const countElement = toolbar?.querySelector<HTMLElement>(SELECTION_COUNT_SELECTOR);
-    const sourceTarget = this.dom.readSourceTargetSnapshot(composer.peerId);
+    if (!toolbar || !nativeForward || !countElement) {
+      return null;
+    }
+
+    // Selection mode replaces the visible message input with this plate, so the composer element
+    // proves peer identity here without being required to stay visible itself.
+    const composer = findActiveComposerContext({ allowHiddenComposer: true });
+    const sourceTarget = composer ? this.dom.readSourceTargetSnapshot(composer.peerId) : null;
     if (
+      !composer ||
       !composer.container.contains(wrapper) ||
       (composer.chat !== null && !composer.chat.contains(history)) ||
-      !toolbar ||
-      !nativeForward ||
-      !countElement ||
       !sourceTarget
     ) {
       return null;

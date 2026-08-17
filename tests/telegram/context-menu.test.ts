@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CLEAN_FORWARD_RUNTIME_FINGERPRINT } from "../../src/app/CleanForwardRuntime";
-import { ContextMenuIntegration } from "../../src/telegram/TelegramContextMenuIntegration";
+import {
+  ContextMenuIntegration,
+  SELECTION_ACTION_LABEL,
+} from "../../src/telegram/TelegramContextMenuIntegration";
 import { createLogger } from "../helpers";
 
 function menuFixture(labels: readonly string[]): { wrapper: HTMLElement; items: HTMLElement } {
@@ -27,6 +30,9 @@ function labels(items: HTMLElement): string[] {
   return Array.from(items.children, (child) => child.textContent?.trim() ?? "");
 }
 
+/** Telegram's tgico glyph that `labels()` reads together with the action's wording. */
+const ACTION_ICON = "";
+
 describe("ContextMenuIntegration", () => {
   beforeEach(() => {
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
@@ -47,6 +53,31 @@ describe("ContextMenuIntegration", () => {
     const { items } = menuFixture(["Reply", "Forward", "Delete"]);
     new ContextMenuIntegration(createLogger()).ensureAction(items, vi.fn());
     expect(labels(items)).toEqual(["Reply", "Forward", "Отправить как новое", "Delete"]);
+  });
+
+  it("places the item after the selection-mode forward entry", () => {
+    const { items } = menuFixture(["Copy selected", "Forward selected", "Clear selection"]);
+    new ContextMenuIntegration(createLogger()).ensureAction(items, vi.fn(), {
+      label: SELECTION_ACTION_LABEL,
+    });
+    expect(labels(items)).toEqual([
+      "Copy selected",
+      "Forward selected",
+      `${ACTION_ICON}${SELECTION_ACTION_LABEL}`,
+      "Clear selection",
+    ]);
+  });
+
+  it("relabels a reused menu when Telegram switches between single and selection mode", () => {
+    const { items } = menuFixture(["Forward"]);
+    const integration = new ContextMenuIntegration(createLogger());
+    integration.ensureAction(items, vi.fn());
+    expect(labels(items)).toEqual(["Forward", `${ACTION_ICON}Отправить как новое`]);
+
+    integration.ensureAction(items, vi.fn(), { label: SELECTION_ACTION_LABEL });
+
+    expect(labels(items)).toEqual(["Forward", `${ACTION_ICON}${SELECTION_ACTION_LABEL}`]);
+    expect(items.querySelectorAll("[data-clean-forward-context-action]")).toHaveLength(1);
   });
 
   it("falls back to placement before Delete when Forward is absent", () => {

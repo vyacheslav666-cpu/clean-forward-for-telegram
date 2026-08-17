@@ -123,7 +123,9 @@ describe("immutable Telegram source target", () => {
     if (fixture.title) fixture.title.textContent = "Later title";
     const menu = document.createElement("div");
     menu.className = "btn-menu contextmenu active has-items-wrapper";
-    menu.innerHTML = '<div class="btn-menu-items"></div>';
+    // Telegram never renders an empty menu: it returns early when no button survives filtering.
+    menu.innerHTML =
+      '<div class="btn-menu-items"><div class="btn-menu-item"><span class="btn-menu-item-text">Forward</span></div></div>';
     document.body.append(menu);
 
     expect(dom.findOpenMessageContext()?.sourceTarget).toEqual({

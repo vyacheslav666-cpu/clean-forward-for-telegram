@@ -24,6 +24,8 @@ function selectionFixture(count: number, peerKey = "20"): SelectionFixture {
   wrapper.className = "chat-input-wrapper selection-wrapper";
   const toolbar = document.createElement("div");
   toolbar.className = "chat-input-plate selection-container";
+  // Web K renders this plate as three slots; each side slot reserves symmetric space for one
+  // icon button, which is why an extra control cannot simply join the Forward slot.
   const countButton = document.createElement("button");
   countButton.className = "btn-primary chat-input-plate-button";
   const countNode = document.createElement("span");
@@ -32,7 +34,15 @@ function selectionFixture(count: number, peerKey = "20"): SelectionFixture {
   countButton.append(countNode);
   const forward = document.createElement("button");
   forward.className = "btn-icon tgico-forward selection-container-forward";
-  toolbar.append(countButton, forward);
+  const leftSlot = document.createElement("div");
+  leftSlot.className = "chat-input-plate-side";
+  const centerSlot = document.createElement("div");
+  centerSlot.className = "chat-input-plate-center";
+  centerSlot.append(countButton);
+  const rightSlot = document.createElement("div");
+  rightSlot.className = "chat-input-plate-side";
+  rightSlot.append(forward);
+  toolbar.append(leftSlot, centerSlot, rightSlot);
   wrapper.append(toolbar);
   composer.parentElement!.append(wrapper);
   return { history, wrapper, toolbar, countButton, count: countNode, forward };
@@ -116,6 +126,58 @@ describe("Telegram native source selection", () => {
     fixture.toolbar.querySelector<HTMLElement>("[data-clean-forward-selection-action]")!
       .dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
     expect(observedText).toBe("fresh after rerender");
+  });
+
+  it("gives the toolbar action visible content instead of an empty cloned button", () => {
+    const fixture = selectionFixture(1);
+    selectedMessage(fixture.history, 10, "selected");
+    const { adapter, integration } = createAdapters();
+
+    integration.ensureAction(adapter.findActiveContext()!, vi.fn());
+
+    const action = fixture.toolbar.querySelector<HTMLElement>(
+      "[data-clean-forward-selection-action]",
+    )!;
+    expect(action.textContent).toContain("Как новое");
+    expect(action.getAttribute("aria-label")).toBe("Отправить как новое");
+    // Telegram's stylesheet must never be able to render this control as the native Forward button.
+    expect(action.classList.contains("selection-container-forward")).toBe(false);
+    // It must occupy its own plate slot rather than being squeezed into the Forward slot.
+    const slot = action.parentElement!;
+    expect(slot.className).toBe("chat-input-plate-side");
+    expect(slot.contains(fixture.forward)).toBe(false);
+    expect(slot.nextElementSibling).toBe(fixture.forward.parentElement);
+  });
+
+  it("removes its own plate slot together with a stale action", () => {
+    const fixture = selectionFixture(1);
+    selectedMessage(fixture.history, 10, "selected");
+    const logger = createLogger();
+    const adapter = new TelegramSelectionDomAdapter(new TelegramDomAdapter(logger), logger);
+    const context = adapter.findActiveContext()!;
+    new TelegramSelectionIntegration(logger).ensureAction(context, vi.fn());
+
+    new TelegramSelectionIntegration(logger).ensureAction(context, vi.fn());
+
+    // A leftover empty slot would keep shifting Telegram's centred count button.
+    expect(fixture.toolbar.querySelectorAll("[data-clean-forward-selection-slot]")).toHaveLength(1);
+    expect(fixture.toolbar.querySelectorAll("[data-clean-forward-selection-action]")).toHaveLength(1);
+    // Telegram's own two side slots must survive untouched.
+    expect(fixture.toolbar.querySelectorAll(".chat-input-plate-side")).toHaveLength(3);
+  });
+
+  it("resolves the selection context while Telegram keeps the message input hidden", () => {
+    const fixture = selectionFixture(1);
+    selectedMessage(fixture.history, 10, "selected");
+    // Selection mode replaces the composer with this plate, so the input itself is not displayed.
+    document.querySelector<HTMLElement>(".input-message-input")!.classList.add("hide");
+    const { adapter } = createAdapters();
+
+    const context = adapter.findActiveContext();
+
+    expect(context?.toolbar).toBe(fixture.toolbar);
+    expect(context?.sourcePeerKey).toBe("20");
+    expect(adapter.readSelectedSnapshots(context!)).toMatchObject({ kind: "captured" });
   });
 
   it("rejects a virtualized selection when native count exceeds visible unique identities", () => {
