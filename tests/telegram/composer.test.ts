@@ -334,6 +334,39 @@ describe("ComposerAdapter", () => {
     expect(unrelatedClick).not.toHaveBeenCalled();
   });
 
+  it("names the obstacle when cleanup cannot be confirmed", async () => {
+    const popup = document.createElement("div");
+    popup.className = "popup-send-photo popup-new-media active";
+    // No close control at all: cleanup must fail, and it must say why.
+    document.body.append(popup);
+    const adapter = new UploadPreviewAdapter();
+
+    expect(await adapter.cancelActivePreview()).toBe(false);
+
+    expect(adapter.describeCancelObstacle()).toContain("Кнопка закрытия");
+  });
+
+  it("ignores outgoing traffic in other chats when confirming cleanup", async () => {
+    const composer = installComposer("8");
+    const popup = document.createElement("div");
+    popup.className = "popup-send-photo popup-new-media active";
+    const close = document.createElement("button");
+    close.className = "popup-close";
+    close.addEventListener("click", () => popup.remove());
+    popup.append(close);
+    document.body.append(popup);
+    // A message being sent elsewhere in Telegram says nothing about this preview's cleanup.
+    const elsewhere = document.createElement("div");
+    elsewhere.className = "sending";
+    document.body.append(elsewhere);
+    const adapter = new UploadPreviewAdapter();
+
+    expect(await adapter.cancelActivePreview()).toBe(true);
+
+    expect(adapter.describeCancelObstacle()).toBeNull();
+    expect(composer.isConnected).toBe(true);
+  });
+
   it("preserves a ready preview when the caption editor is unavailable", async () => {
     vi.useFakeTimers();
     installComposer("8");

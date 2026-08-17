@@ -34,6 +34,8 @@ export interface UploadPreviewSession {
 
 /** Handles File selection, preview readiness, caption editing, and safe cancellation. */
 export class UploadPreviewAdapter {
+  private cancelObstacle: string | null = null;
+
   /** Assigns exactly one File and dispatches only Telegram's confirmed change event. */
   public selectFile(target: ArmedMediaInput, file: File): void {
     this.selectFiles(target, [file]);
@@ -191,12 +193,15 @@ export class UploadPreviewAdapter {
     }
 
     if (previews.length !== 1) {
+      this.cancelObstacle = `Telegram открыл несколько preview одновременно (${previews.length}).`;
       return false;
     }
 
     const popup = previews.item(0);
     const closeButtons = popup.querySelectorAll<HTMLElement>(CLOSE_BUTTON_SELECTOR);
     if (closeButtons.length !== 1) {
+      this.cancelObstacle =
+        `Кнопка закрытия preview не найдена однозначно (${closeButtons.length}).`;
       return false;
     }
 
@@ -208,14 +213,37 @@ export class UploadPreviewAdapter {
         "Telegram не закрыл upload preview.",
       );
     } catch {
+      this.cancelObstacle =
+        `Telegram не закрыл preview за ${PREVIEW_CLOSE_TIMEOUT_MS} мс после нажатия закрытия.`;
       return false;
     }
 
     const composer = findActiveComposerContext();
-    return (
-      (!composer || isComposerEmpty(composer)) &&
-      document.querySelector(SENDING_SELECTOR) === null
-    );
+    if (composer && !isComposerEmpty(composer)) {
+      this.cancelObstacle = "После закрытия preview поле ввода получателя осталось непустым.";
+      return false;
+    }
+    // Scoped to the destination chat on purpose: this proves that closing the preview did not
+    // send anything here. A document-wide match also caught unrelated outgoing messages
+    // elsewhere in Telegram and turned ordinary traffic into a cleanup failure.
+    const sendingScope = composer?.chat ?? null;
+    if (sendingScope?.querySelector(SENDING_SELECTOR)) {
+      this.cancelObstacle = "После закрытия preview в чате получателя осталась отправка.";
+      return false;
+    }
+
+    this.cancelObstacle = null;
+    return true;
+  }
+
+  /**
+   * Reports why the last cancellation could not be confirmed.
+   *
+   * Cleanup has several independent failure conditions but only one boolean result, which made a
+   * real failure impossible to diagnose from the delivery panel alone.
+   */
+  public describeCancelObstacle(): string | null {
+    return this.cancelObstacle;
   }
 
   private findSingleActivePreview(): HTMLElement | null {

@@ -111,6 +111,11 @@ export class ComposerAdapter {
       : true;
   }
 
+  /** Reports why the last preview cleanup could not be confirmed, when the adapter exposes it. */
+  public describePreviewObstacle(): string | null {
+    return this.preview.describeCancelObstacle?.() ?? null;
+  }
+
   /** Safely closes a media preview left open after a recoverable partial failure. */
   public async cancelPreparedPreview(): Promise<boolean> {
     if (!this.ownsOpenPreview) {

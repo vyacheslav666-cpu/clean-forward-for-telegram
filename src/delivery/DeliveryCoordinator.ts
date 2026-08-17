@@ -298,6 +298,7 @@ export class DeliveryCoordinator {
         unit,
         peerKey,
         "preparation failure",
+        prepared.message,
       );
       if (!cleanupSafe) {
         return { kind: "safety" };
@@ -320,6 +321,7 @@ export class DeliveryCoordinator {
         unit,
         peerKey,
         "Send-control failure",
+        sendResult.message,
       );
       if (!cleanupSafe) {
         return { kind: "safety" };
@@ -509,23 +511,34 @@ export class DeliveryCoordinator {
     );
   }
 
+  /**
+   * @param cause What already failed before cleanup started. It is preserved because that is the
+   * question a user needs answered; reporting only the cleanup outcome discarded the real reason
+   * and left the panel showing a safety stop with no cause at all.
+   */
   private async cancelPreparedUnitSafely(
     context: DeliveryContext,
     unit: TransferUnit,
     peerKey: string,
     phase: string,
+    cause?: string,
   ): Promise<boolean> {
+    const describe = (summary: string): string =>
+      [cause, summary, this.composer.describePreviewObstacle?.() ?? null]
+        .filter(Boolean)
+        .join(" ");
+
     try {
       if (await this.composer.cancelPreparedUnit(unit, peerKey)) {
         return true;
       }
-      const detail = `Prepared content cleanup could not be confirmed after ${phase}.`;
+      const detail = describe(`Prepared content cleanup could not be confirmed after ${phase}.`);
       this.recordSafetyFailure(context, detail);
       this.markCurrentPreSendFailure(context, peerKey, detail);
       return false;
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Unknown cleanup error.";
-      const detail = `Prepared content cleanup threw after ${phase}: ${reason}`;
+      const detail = describe(`Prepared content cleanup threw after ${phase}: ${reason}`);
       this.recordSafetyFailure(context, detail, error);
       this.markCurrentPreSendFailure(context, peerKey, detail);
       return false;
