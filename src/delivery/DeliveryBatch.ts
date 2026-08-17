@@ -148,6 +148,11 @@ export class DeliveryBatch {
       throw new Error("Navigation requires unfinished retry-safe work.");
     }
     nextUnit.attemptCount += 1;
+    // The previous attempt's failure is history once a new one starts. Leaving it in place kept a
+    // red error on the panel underneath a running "preparing" row, which reads as a failed delivery
+    // even when the retry then succeeds. `retryReason` deliberately survives as attempt history.
+    record.detail = undefined;
+    nextUnit.detail = undefined;
   }
 
   /** Marks preparation of exactly one pending unit after peer validation. */
@@ -162,6 +167,8 @@ export class DeliveryBatch {
     const startedWhileAlreadyInRecipient = record.status === "preparing";
     record.status = "preparing";
     unit.status = "preparing";
+    record.detail = undefined;
+    unit.detail = undefined;
     if (startedWhileAlreadyInRecipient) {
       unit.attemptCount += 1;
     }

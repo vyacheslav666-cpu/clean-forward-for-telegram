@@ -24,6 +24,35 @@ const PREVIEW_READY_TIMEOUT_MS = 10_000;
 const CAPTION_STABLE_TIMEOUT_MS = 2_000;
 const PREVIEW_CLOSE_TIMEOUT_MS = 5_000;
 
+/**
+ * Names the condition that actually failed instead of reporting one opaque timeout.
+ *
+ * Reports the shape of the mismatch, never the caption itself: this string reaches the delivery
+ * panel and from there screenshots and issues, and message content must not leave the session.
+ */
+function describeCaptionFailure(expected: string, observed: string, stable: boolean): string {
+  if (observed === expected) {
+    return "Telegram не завершил анимацию поля подписи за отведённое время.";
+  }
+
+  const summary = !stable
+    ? "Подпись не совпала, и поле всё ещё анимировалось."
+    : "Telegram оставил в поле подписи не то значение, которое было вставлено.";
+  let firstDifference = 0;
+  while (
+    firstDifference < expected.length &&
+    firstDifference < observed.length &&
+    expected[firstDifference] === observed[firstDifference]
+  ) {
+    firstDifference += 1;
+  }
+  return (
+    `${summary} Ожидалось ${expected.length} символов ` +
+    `(${expected.split("\n").length} строк), прочитано ${observed.length} ` +
+    `(${observed.split("\n").length} строк); первое расхождение в позиции ${firstDifference}.`
+  );
+}
+
 /** Fully rendered preview nodes scoped to one image and one destination peer. */
 export interface UploadPreviewSession {
   readonly popup: HTMLElement;
@@ -158,13 +187,18 @@ export class UploadPreviewAdapter {
       );
     }
 
+    let lastObserved = "";
+    let lastStable = false;
     try {
       await waitForCondition(
         () => {
           this.assertSessionActive(session);
-          const valueMatches = readTelegramText(session.captionEditor) === normalizedCaption;
-          const editorStable = !session.popup.querySelector(UNSTABLE_EDITOR_SELECTOR);
-          return valueMatches && editorStable ? true : null;
+          lastObserved = readTelegramText(session.captionEditor);
+          // Web K puts both classes on the caption editor itself (`SetTransition` in
+          // `inputFieldAnimated.ts`), so a popup-wide search only added unrelated Telegram
+          // animations as a reason to fail an otherwise finished caption.
+          lastStable = !session.captionEditor.matches(UNSTABLE_EDITOR_SELECTOR);
+          return lastObserved === normalizedCaption && lastStable ? true : null;
         },
         CAPTION_STABLE_TIMEOUT_MS,
         "Telegram не завершил обработку подписи.",
@@ -175,7 +209,7 @@ export class UploadPreviewAdapter {
       }
       throw new TelegramIntegrationError(
         "caption-insertion-failed",
-        error instanceof Error ? error.message : "Не удалось проверить подпись.",
+        describeCaptionFailure(normalizedCaption, lastObserved, lastStable),
       );
     }
   }

@@ -51,13 +51,13 @@ pending → navigating → preparing → sending → sent
 | `resolve recipient → navigate` | Выбран ≥1 поддерживаемый peer; `DeliveryCoordinator` свободен; payload атомарно переведён в `inserting` | Создан immutable `DeliveryBatch`, picker закрыт | Нет | `start()` вернул `null`, picker открывается снова | Нет |
 | `navigate → validate peer` | Нет Forward popup/media preview/`.sending`; в активном virtual list есть точная строка `data-peer-id`; строка не forum/sponsored | После synthetic `mousedown` найден composer с ожидаемым `data-peer-id` | 5 s | `failed`, payload остаётся retryable | Нет до Send |
 | `validate peer → acquire composer` | В документе ровно один `.input-message-input[contenteditable][data-peer-id]` | Peer совпал, composer пуст, видимого `.reply-wrapper` нет | Включён в те же 5 s | `failed` | Нет |
-| `acquire composer → preserve draft` | — | — | — | Текущий код не сохраняет draft: непустой composer просто блокирует операцию | — |
+| `acquire composer → preserve draft` | Composer принадлежит ожидаемому peer | `ComposerDraftTransaction` снял snapshot и освободил composer | Нет | `failed` до Send | Неподтверждённое restore → safety failure |
 | `preserve draft → prepare payload` | Composer считается чистым и принадлежит peer | Text точно прочитан обратно; либо готов один blob preview и проверена caption | Media arm 2 s; popup 5 s; preview 10 s; caption 2 s | Cleanup подготовленного text/preview; `failed` | Preview, который не удалось закрыть, оставляет ручную очистку |
 | `prepare payload → send` | Peer всё ещё активен; payload совпадает; нет reply/forward draft; ровно одна enabled Send button | Confirmation wait вооружён, затем callback помечает irreversible boundary и вызывается `button.click()` | Отдельного timeout нет | Ошибка до boundary → `failed` | Любая неоднозначность после boundary → `unknown` |
 | `send → confirm` | Send boundary пересечён; сохранён baseline outgoing `data-mid` | Появилась ровно одна новая `.bubble.is-out[data-mid][data-peer-id=peer]`, на ней/в ней нет `.sending` | 12 s | Нет: post-Send retry запрещён | Timeout, смена active peer, >1 новая bubble → `unknown` |
-| `confirm → restore draft` | — | — | — | Не реализовано | — |
+| `confirm → restore draft` | Попытка recipient завершена любым исходом | Draft прочитан обратно и совпал | Нет | Нет: restore выполняется в `finally` | Неподтверждённое restore → safety failure |
 | `restore draft → next recipient` | Предыдущий recipient имеет `sent`; cancel не запрошен | `nextPending()` возвращает следующего и цикл повторяется | Нет | Любой pre-Send `failed` сейчас останавливает весь batch | `unknown` останавливает batch и уничтожает retryable payload |
-| `next recipient → restore source chat` | — | — | — | Не реализовано; UI остаётся в последнем destination chat | — |
+| `next recipient → restore source chat` | Batch завершён любым terminal outcome | Exact peer proof исходного чата через owned composer | Тот же navigation timeout | Нет: выполняется в `finally` | Неподтверждённый возврат → safety failure |
 | `restore source chat → done` | Нет pending/unknown либо batch остановлен | `PendingTransfer.completeInsertion()` и summary panel | Нет | При `failed/pending` payload возвращается в ready и ждёт ручной Retry | `unknown` очищает payload для защиты от дубликата |
 
 ## Найденные race conditions и fragile assumptions
@@ -76,9 +76,9 @@ pending → navigating → preparing → sending → sent
 7. **Recipient source ждёт ровно один `requestAnimationFrame`.** Нет predicate «active list стабилен и rows загружены» и нет timeout/observer handshake. В background tab/PWA кадр может быть throttled.
 8. **Preview/caption waits зависят от rAF polling.** У них есть state predicates и верхние timeout, то есть это не blind sleep, но background/minimized Chrome может замедлить rAF сильнее timeout.
 9. **Text insertion зависит от focus и `document.execCommand`.** `nativeTextEditing` принудительно фокусирует composer и предполагает, что selection/execCommand работают в текущем Chrome document. Результат проверяется, поэтому failure остаётся pre-Send, но focus может быть перехвачен Telegram modal/PWA window state.
-10. **Draft preservation отсутствует.** Непустой target composer или видимый reply/forward draft блокирует доставку. Snapshot, очистка с ownership token и restore не реализованы.
-11. **Source chat restoration отсутствует.** После batch пользователь остаётся в последнем destination chat.
-12. **Recoverable failure требует ручного Retry.** `DeliveryCoordinator` останавливает batch после первого pre-Send failure, а `DeliveryProgressPanel` показывает «Повторить оставшиеся». Это противоречит требованию, что Retry не должен быть обязательной частью нормального pipeline.
+10. ~~**Draft preservation отсутствует.**~~ **Исправлено.** `ComposerDraftTransaction` снимает snapshot, освобождает composer и восстанавливает draft после попытки; неподтверждённое восстановление становится safety failure.
+11. ~~**Source chat restoration отсутствует.**~~ **Исправлено.** `DeliveryCoordinator.restoreSourceChat()` выполняется в `finally` после любого terminal outcome и требует exact peer proof.
+12. ~~**Recoverable failure требует ручного Retry.**~~ **Исправлено.** `DeliveryRetryPolicy` даёт bounded automatic retry, разрешённый только до Send; ручной Retry остаётся для терминальных pre-Send отказов.
 13. **Cleanup preview иногда требует ручного действия.** Если scoped close не закрывает preview, ошибка прямо просит закрыть его вручную. Это допустимый аварийный fail-closed исход, но не нормальный автономный pipeline.
 14. **Media mode ищется по английскому тексту `Photo or Video`.** В другой локали photo preparation не стартует.
 
@@ -124,13 +124,36 @@ pending → navigating → preparing → sending → sent
 
 ## Что исправлять следующим шагом
 
-Следующий P0 должен быть отдельным небольшим изменением вокруг navigation/composer acquisition:
+Выполнено с момента аудита:
+
+2. ✅ `navigate` и `acquire composer` разделены: navigation проходит `resolve → address → initiate → observe → exact peer → owned composer → stabilize → cleanup → final proof`.
+4. ✅ Owned draft snapshot/restore и восстановление source chat выполняются в `finally`, отдельно от Send result.
+5. ✅ Bounded automatic retry разрешён только до Send; post-Send `unknown` не повторяется.
+
+Остаётся:
 
 1. Ввести immutable `DeliveryTransactionContext`: source peer, target peer, payload identity, source/target draft snapshots и текущая явная phase.
-2. Разделить `navigate` и `acquire composer`: ждать active list/row по predicate, проверить connected/visible row, выполнить поддерживаемую UI event sequence, затем требовать устойчивый target composer и target Send control.
-3. Заменить single-rAF recipient loading на abortable state wait с timeout и MutationObserver/rAF fallback, пригодный для PWA/sidebar transitions.
-4. Добавить owned draft snapshot/restore и обязательное восстановление source chat в `finally` — отдельно от Send result.
-5. После этого добавить bounded automatic retry только для доказанно pre-Send фаз. Post-Send `unknown` по-прежнему никогда не повторять.
+3. Заменить single-rAF recipient loading на abortable state wait с timeout и MutationObserver/rAF fallback, пригодный для PWA/sidebar transitions. `TelegramRecipientSourceAdapter` по-прежнему использует одиночный `requestAnimationFrame` без readiness predicate.
 6. Усилить confirmation корреляцией с подготовленным payload, не используя Send click как success.
 
-До выполнения пунктов 1–4 не следует добавлять новые типы сообщений.
+До выполнения пунктов 1 и 3 не следует добавлять новые типы сообщений.
+
+## P0 браузерного контракта: verification против собственной вставки
+
+Найдено 2026-08-17, отдельный класс дефекта — предположение не о Telegram, а о браузере.
+
+`readTelegramText` знал только `<br>`, а Chrome записывает результат `execCommand("insertText")` как
+отдельный блок `<div>` на строку. Поэтому проверка «вставленное совпадает с подготовленным» не могла
+выполниться ни для одного многострочного значения: подпись и текст падали по timeout, а сам Telegram
+прочитал бы эти блоки корректно (`BLOCK_TAGS` в `getRichElementValue.ts`). Fail-closed срабатывал на
+ложном несовпадении и блокировал корректную отправку; многострочный draft получателя мог довести до
+safety stop при восстановлении.
+
+Suite этого не ловил структурно: мок `document.execCommand` присваивал `textContent`, то есть
+round-trip проверялся против выдуманной разметки. Один тест прямо фиксировал сломанный вывод как
+ожидаемый.
+
+Вывод для дальнейшей работы: **любую верификацию собственной вставки нужно проверять на реальном
+выводе браузера, а не на фикстуре, построенной по тому же предположению, что и код.** Ровно то же
+правило уже действует для DOM-контракта Telegram, но здесь источником истины является Chrome.
+Текущие фикстуры `tests/telegram/read-telegram-text.test.ts` сняты с реального `innerHTML`.
