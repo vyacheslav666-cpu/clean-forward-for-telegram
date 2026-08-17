@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { TelegramDomAdapter } from "../../src/telegram/TelegramDomAdapter";
+import { readTelegramText } from "../../src/telegram/readTelegramText";
 import { createLogger, installComposer } from "../helpers";
 
 describe("composer draft transaction", () => {
@@ -111,7 +112,10 @@ describe("composer draft transaction", () => {
     expect(started.success).toBe(true);
     if (!started.success) return;
     await started.transaction.restore();
-    expect(composer.textContent).toBe("line one\nline two\nline three");
+    // Not `textContent`: Chrome restores the draft as `<div>` blocks, so the flattened property
+    // reports "line oneline twoline three". The draft is only preserved if the value Telegram reads
+    // back still has its line breaks.
+    expect(readTelegramText(composer)).toBe("line one\nline two\nline three");
   });
 
   it("restores into a fresh same-peer composer after Telegram rerenders", async () => {

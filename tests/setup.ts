@@ -48,13 +48,38 @@ Object.defineProperty(globalThis, "MouseEvent", {
   value: TestMouseEvent,
 });
 
+/**
+ * Reproduces how Chrome's `execCommand("insertText")` actually writes a value into a
+ * contenteditable: the first line stays inline and every following line gets its own `<div>`, with
+ * `<div><br></div>` standing for an empty one.
+ *
+ * jsdom has no editing pipeline, so this mock is the only contract the suite ever sees. Flattening
+ * the value into `textContent` made every multi-line round-trip succeed here and fail in Telegram.
+ */
+function writeLikeChrome(editor: HTMLElement, value: string): void {
+  editor.replaceChildren();
+  if (value.length === 0) {
+    return;
+  }
+
+  const [first, ...rest] = value.split("\n");
+  if (first) {
+    editor.append(document.createTextNode(first));
+  }
+  for (const line of rest) {
+    const block = document.createElement("div");
+    block.append(line ? document.createTextNode(line) : document.createElement("br"));
+    editor.append(block);
+  }
+}
+
 Object.defineProperty(document, "execCommand", {
   configurable: true,
   writable: true,
   value: vi.fn((command: string, _showUi: boolean, value: string) => {
     const editor = document.activeElement;
     if (editor instanceof HTMLElement) {
-      editor.textContent = command === "delete" ? "" : value;
+      writeLikeChrome(editor, command === "delete" ? "" : value);
       editor.dispatchEvent(
         new InputEvent("input", {
           bubbles: true,
