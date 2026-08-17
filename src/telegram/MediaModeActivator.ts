@@ -8,10 +8,17 @@ import { TelegramIntegrationError } from "./TelegramIntegrationError";
 import { waitForCondition } from "./waitForCondition";
 
 const FILE_INPUT_SELECTOR = '.new-message-wrapper input[type="file"]';
-const ATTACHMENT_BUTTON_SELECTOR = "attach-menu-button.attach-file";
+/**
+ * The attach control is Web K's `attach-menu-button` custom element. The `attach-file` class it
+ * used to carry has been dropped, so matching the element itself keeps both builds working.
+ */
+const ATTACHMENT_BUTTON_SELECTOR = "attach-menu-button";
+/** Class Telegram's own toggle handler uses to decide whether a further click opens or closes. */
+const MENU_OPEN_CLASS = "menu-open";
 const ACTIVE_MENU_SELECTOR = ".btn-menu.active";
 const MENU_ITEM_SELECTOR = ".btn-menu-item";
 const MENU_ITEM_TEXT_SELECTOR = ".btn-menu-item-text";
+/** Removed from current Web K, which closes menus through a document-level overlay handler. */
 const MENU_OVERLAY_SELECTOR = ".btn-menu-overlay";
 const ACTIVE_MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
 const VERIFIED_MENU_LABELS = Object.freeze({
@@ -19,6 +26,15 @@ const VERIFIED_MENU_LABELS = Object.freeze({
   document: "Document",
 });
 const MEDIA_MODE_TIMEOUT_MS = 2_000;
+/**
+ * Opening the attach menu is not a local DOM toggle: Telegram awaits its attach-menu bots request
+ * before it builds any item. Two seconds timed out on a normal connection, and the menu then
+ * appeared anyway, leaving Telegram with an open menu after this operation had already failed.
+ */
+const ATTACH_MENU_TIMEOUT_MS = 10_000;
+/** Window kept watching for a menu that arrives just after the activation gave up. */
+const ATTACH_MENU_CLEANUP_MS = 2_000;
+const ATTACH_MENU_CLEANUP_POLL_MS = 100;
 
 /** File input armed by Telegram for media attachment in one captured destination chat. */
 export interface ArmedMediaInput {
@@ -84,11 +100,11 @@ export class MediaModeActivator {
       try {
         mediaItem = await waitForCondition(
           () => this.findVerifiedItem(mode),
-          MEDIA_MODE_TIMEOUT_MS,
+          ATTACH_MENU_TIMEOUT_MS,
           "Telegram не открыл меню вложений.",
         );
       } catch (error) {
-        this.closeAttachmentMenu();
+        await this.closeAttachmentMenu(attachmentButton);
         throw new TelegramIntegrationError(
           "media-mode-unavailable",
           error instanceof Error ? error.message : "Не удалось открыть меню вложений.",
@@ -158,13 +174,50 @@ export class MediaModeActivator {
     return matches.length === 1 ? matches[0] ?? null : null;
   }
 
-  private closeAttachmentMenu(): void {
+  /**
+   * Leaves no Telegram menu open after a failed activation.
+   *
+   * The toggle button is the native path: Telegram's own handler closes an already-open menu on the
+   * next click. The former overlay element no longer exists in Web K, so relying on it alone left
+   * the attach menu open over the chat — including when the menu finished opening just after this
+   * operation timed out.
+   */
+  private async closeAttachmentMenu(attachmentButton: HTMLElement): Promise<void> {
+    // The request that builds the menu may still be in flight when this operation gives up, so a
+    // single immediate attempt can find nothing and let the menu appear afterwards. Keep watching
+    // for a bounded window; every path here is pre-Send, so waiting is safe.
+    const deadline = Date.now() + ATTACH_MENU_CLEANUP_MS;
+    do {
+      if (this.tryCloseAttachmentMenu(attachmentButton)) {
+        return;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, ATTACH_MENU_CLEANUP_POLL_MS));
+    } while (Date.now() < deadline);
+
+    this.tryCloseAttachmentMenu(attachmentButton);
+  }
+
+  /** Returns whether an open menu was found and closed. */
+  private tryCloseAttachmentMenu(attachmentButton: HTMLElement): boolean {
+    if (attachmentButton.classList.contains(MENU_OPEN_CLASS)) {
+      attachmentButton.click();
+      return true;
+    }
+
     const activeMenu = Array.from(document.querySelectorAll<HTMLElement>(ACTIVE_MENU_SELECTOR)).find(
       (menu) => menu.querySelector(MENU_ITEM_SELECTOR),
     );
-    const overlay = activeMenu?.previousElementSibling;
+    if (!activeMenu) {
+      return false;
+    }
+
+    const overlay = activeMenu.previousElementSibling;
     if (overlay instanceof HTMLElement && overlay.matches(MENU_OVERLAY_SELECTOR)) {
       overlay.click();
+      return true;
     }
+
+    activeMenu.classList.remove("active");
+    return true;
   }
 }
