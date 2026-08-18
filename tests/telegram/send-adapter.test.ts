@@ -5,6 +5,10 @@ import { TelegramSendAdapter } from "../../src/telegram/TelegramSendAdapter";
 import { observeDom } from "../../src/utils/observeDom";
 import { installComposer } from "../helpers";
 
+/**
+ * Mirrors how Web K renders an outgoing message: an in-flight bubble carries `is-outgoing` and
+ * `is-sending` and holds a temporary fractional mid until the server answers.
+ */
 function appendOutgoing(
   peerKey: string,
   messageId: string,
@@ -12,7 +16,7 @@ function appendOutgoing(
   text = "fixture-text",
 ): HTMLElement {
   const bubble = document.createElement("div");
-  bubble.className = `bubble is-out${pending ? " sending" : ""}`;
+  bubble.className = `bubble is-out${pending ? " is-outgoing is-sending" : ""}`;
   bubble.dataset.peerId = peerKey;
   bubble.dataset.mid = messageId;
   const message = document.createElement("span");
@@ -21,6 +25,13 @@ function appendOutgoing(
   bubble.append(message);
   document.body.append(bubble);
   return bubble;
+}
+
+/** Mirrors Web K's `message_sent`: the server id is written first, then the status classes swap. */
+function acknowledgeOutgoing(bubble: HTMLElement, messageId: string): void {
+  bubble.dataset.mid = messageId;
+  bubble.classList.remove("is-outgoing", "is-sending", "sending");
+  bubble.classList.add("is-sent");
 }
 
 function installTextSend(peerKey: string, text: string) {
@@ -171,11 +182,54 @@ describe("TelegramSendAdapter", () => {
     });
   });
 
+  /**
+   * Web K clears `is-outgoing` from the album bubble as soon as its first part is acknowledged,
+   * so the bubble class alone would confirm an album whose remaining items are still uploading.
+   */
+  it("waits for every album item to lose its temporary mid", async () => {
+    const { button } = installAlbumSend("8");
+    const adapter = new TelegramSendAdapter();
+    const items: HTMLElement[] = [];
+    button.addEventListener("click", () => {
+      const group = document.createElement("div");
+      group.className = "bubble is-out is-outgoing is-sending";
+      group.dataset.peerId = "8";
+      ["7000.0001", "7000.0002"].forEach((mid) => {
+        const item = document.createElement("div");
+        item.className = "grouped-item";
+        item.dataset.mid = mid;
+        group.append(item);
+        items.push(item);
+      });
+      document.body.append(group);
+      group.classList.remove("is-outgoing", "is-sending");
+      items[0]!.dataset.mid = "7001";
+    });
+    let settled = false;
+    const sending = adapter.sendPreparedUnit(
+      albumUnitFixture(),
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    ).then((result) => { settled = true; return result; });
+
+    await Promise.resolve();
+    adapter.notifyDomChanged();
+    expect(settled).toBe(false);
+    items[1]!.dataset.mid = "7002";
+    adapter.notifyDomChanged();
+    await expect(sending).resolves.toEqual({
+      status: "sent",
+      messageId: "7001",
+      messageIds: ["7001", "7002"],
+    });
+  });
+
   it("does not advance success while the new outgoing bubble is still sending", async () => {
     const { button } = installTextSend("8", "fixture-text");
     const adapter = new TelegramSendAdapter();
     let bubble: HTMLElement | null = null;
-    button.addEventListener("click", () => { bubble = appendOutgoing("8", "new-mid", true); });
+    button.addEventListener("click", () => { bubble = appendOutgoing("8", "1000.0001", true); });
     let settled = false;
     const sending = adapter.sendPrepared(
       { kind: "text", text: "fixture-text" },
@@ -188,9 +242,55 @@ describe("TelegramSendAdapter", () => {
     });
     await Promise.resolve();
     expect(settled).toBe(false);
-    (bubble as unknown as HTMLElement).classList.remove("sending");
+    acknowledgeOutgoing(bubble as unknown as HTMLElement, "1001");
     adapter.notifyDomChanged();
-    expect(await sending).toEqual({ status: "sent", messageId: "new-mid" });
+    expect(await sending).toEqual({ status: "sent", messageId: "1001" });
+  });
+
+  /**
+   * The reordering this guards against: confirming the optimistic bubble released the next unit
+   * while this upload was still running, and Telegram numbered the two by upload speed instead of
+   * by the order they were captured in.
+   */
+  it("does not confirm a temporary mid even after Telegram drops the sending classes", async () => {
+    const { button } = installTextSend("8", "fixture-text");
+    const adapter = new TelegramSendAdapter();
+    let bubble: HTMLElement | null = null;
+    button.addEventListener("click", () => { bubble = appendOutgoing("8", "2000.0001"); });
+    let settled = false;
+    const sending = adapter.sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    ).then((result) => { settled = true; return result; });
+
+    await Promise.resolve();
+    adapter.notifyDomChanged();
+    expect(settled).toBe(false);
+    (bubble as unknown as HTMLElement).dataset.mid = "2001";
+    adapter.notifyDomChanged();
+    expect(await sending).toEqual({ status: "sent", messageId: "2001" });
+  });
+
+  it("reports unknown when Telegram rejects the message it accepted for sending", async () => {
+    const { button } = installTextSend("8", "fixture-text");
+    const adapter = new TelegramSendAdapter();
+    let bubble: HTMLElement | null = null;
+    button.addEventListener("click", () => { bubble = appendOutgoing("8", "3000.0001", true); });
+    const sending = adapter.sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    );
+
+    await Promise.resolve();
+    const rejected = bubble as unknown as HTMLElement;
+    rejected.classList.remove("is-outgoing", "is-sending");
+    rejected.classList.add("is-error");
+    adapter.notifyDomChanged();
+    expect((await sending).status).toBe("unknown");
   });
 
   it("confirms delivery when Telegram removes only the sending class", async () => {
@@ -209,7 +309,7 @@ describe("TelegramSendAdapter", () => {
       );
       await Promise.resolve();
       adapter.notifyDomChanged();
-      (bubble as unknown as HTMLElement).classList.remove("sending");
+      (bubble as unknown as HTMLElement).classList.remove("is-outgoing", "is-sending");
       await expect(sending).resolves.toEqual({ status: "sent", messageId: "new-mid" });
     } finally {
       observation.disconnect();
@@ -365,11 +465,51 @@ describe("TelegramSendAdapter", () => {
     );
 
     await vi.advanceTimersByTimeAsync(12_100);
-    (bubble as unknown as HTMLElement).classList.remove("sending");
-    await vi.advanceTimersByTimeAsync(500);
+    acknowledgeOutgoing(bubble as unknown as HTMLElement, "pending-mid");
+    await vi.advanceTimersByTimeAsync(1_000);
 
     expect(await sending).toEqual({ status: "sent", messageId: "pending-mid" });
     expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("keeps waiting past the confirmation timeout while Telegram is still uploading", async () => {
+    vi.useFakeTimers();
+    const { button } = installTextSend("8", "fixture-text");
+    let bubble: HTMLElement | null = null;
+    button.addEventListener("click", () => { bubble = appendOutgoing("8", "5000.0001", true); });
+    let settled = false;
+    const sending = new TelegramSendAdapter().sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    ).then((result) => { settled = true; return result; });
+
+    // Well past the 12 s confirmation timeout and the whole reconciliation backoff: an upload of
+    // the maximum captured size outlives both, and giving up would stop the batch over a message
+    // Telegram is visibly still sending.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(settled).toBe(false);
+    acknowledgeOutgoing(bubble as unknown as HTMLElement, "5001");
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(await sending).toEqual({ status: "sent", messageId: "5001" });
+  });
+
+  it("returns unknown when the upload never leaves the sending state", async () => {
+    vi.useFakeTimers();
+    const { button } = installTextSend("8", "fixture-text");
+    button.addEventListener("click", () => { appendOutgoing("8", "6000.0001", true); });
+    const sending = new TelegramSendAdapter().sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    );
+
+    await vi.advanceTimersByTimeAsync(301_000);
+
+    expect((await sending).status).toBe("unknown");
   });
 
   it("keeps reconciliation alive after cancellation once Send was clicked", async () => {

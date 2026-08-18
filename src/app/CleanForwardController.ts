@@ -16,6 +16,7 @@ import type {
   TelegramSourceSnapshot,
   TelegramSourceTargetSnapshot,
 } from "../telegram/TelegramSourceSnapshot";
+import type { CaptureNotice } from "../ui/CaptureNotice";
 import type { Logger } from "../utils/logger";
 import { observeDom, type DomObservation } from "../utils/observeDom";
 
@@ -37,6 +38,7 @@ export class CleanForwardController {
     private readonly selectionIntegration: TelegramSelectionIntegration,
     private readonly recipients: RecipientPickerController,
     private readonly log: Logger,
+    private readonly notice: CaptureNotice,
   ) {}
 
   /** Starts DOM tracking and wires the userscript into Telegram's dynamic page. */
@@ -58,6 +60,7 @@ export class CleanForwardController {
     this.dom.stopTrackingContextTargets();
     this.captureSession?.controller.abort();
     this.captureSession = null;
+    this.notice.hide();
     this.recipients.stop();
     this.pending.clear();
   }
@@ -181,7 +184,10 @@ export class CleanForwardController {
         return;
       }
       if (result.kind !== "captured") {
+        // A rejected capture used to log and return, so the click looked like a dead button and
+        // gave no way to tell "not supported" apart from "userscript is not running".
         this.log.warn("Source capture остановлен до recipient picker.", result.reason);
+        this.notice.show("Clean Forward не может скопировать это сообщение", result.reason.message);
         return;
       }
 
@@ -205,6 +211,10 @@ export class CleanForwardController {
         return;
       }
       this.log.error("Необработанная ошибка извлечения payload.", error);
+      this.notice.show(
+        "Clean Forward не смог подготовить сообщение",
+        error instanceof Error ? error.message : "Неизвестная ошибка извлечения.",
+      );
     } finally {
       if (this.captureSession === session) {
         this.captureSession = null;

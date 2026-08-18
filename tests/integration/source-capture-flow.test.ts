@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CleanForwardController } from "../../src/app/CleanForwardController";
+import { CaptureNotice } from "../../src/ui/CaptureNotice";
 import { PendingTransfer } from "../../src/domain/PendingTransfer";
 import type { RecipientPickerController } from "../../src/recipient/RecipientPickerController";
 import {
@@ -33,6 +34,7 @@ function createController() {
     new TelegramSelectionIntegration(logger),
     recipients,
     logger,
+    new CaptureNotice(),
   );
   controllers.push(controller);
   return { controller, pending, recipients };

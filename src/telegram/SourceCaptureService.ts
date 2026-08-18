@@ -242,18 +242,23 @@ export class SourceCaptureService {
         });
       }
       if (snapshot.identityResolution === "dom-fallback") {
+        const hasOneVideo = snapshot.video !== null;
         if (
           snapshot.hasUnsupportedAttachment ||
           snapshot.imageCount > 1 ||
+          snapshot.videoCount > 1 ||
+          (snapshot.videoCount === 1 && !hasOneVideo) ||
+          (hasOneVideo && snapshot.imageCount > 0) ||
           (snapshot.imageCount === 1 && !snapshot.imageUrl) ||
-          (snapshot.imageCount === 0 && !snapshot.text?.trim())
+          (snapshot.imageCount === 0 && !hasOneVideo && !snapshot.text?.trim())
         ) {
           return createUnsupportedSource({
             source,
             messages,
             reason: {
               code: "unsupported-type",
-              message: "DOM fallback can capture only plain text or one ordinary photo.",
+              message:
+                "DOM fallback can capture only plain text, one ordinary photo, or one ordinary video.",
             },
           });
         }

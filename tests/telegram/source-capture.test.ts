@@ -21,6 +21,8 @@ function snapshot(
     text: `text-${mid}`,
     imageUrl: null,
     imageCount: 0,
+    video: null,
+    videoCount: 0,
     hasUnsupportedAttachment: false,
     ...overrides,
   };

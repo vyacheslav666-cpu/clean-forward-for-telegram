@@ -15,7 +15,10 @@ import {
 } from "./TelegramComposerDom";
 import { insertTextNatively } from "./nativeTextEditing";
 import { readTelegramText } from "./readTelegramText";
-import type { TelegramMessageSnapshot } from "./TelegramSourceSnapshot";
+import type {
+  TelegramDomVideoSnapshot,
+  TelegramMessageSnapshot,
+} from "./TelegramSourceSnapshot";
 
 const MESSAGE_ROOT_SELECTOR = ".bubble[data-mid][data-peer-id]";
 const GROUPED_ITEM_SELECTOR = ".grouped-item[data-mid][data-peer-id]";
@@ -24,6 +27,12 @@ const MESSAGE_TEXT_SELECTOR = ".message";
 const MESSAGE_TIME_SELECTOR = ".time";
 const MESSAGE_LAYOUT_FIX_SELECTOR = ".clearfix";
 const MESSAGE_PHOTO_SELECTOR = "img.media-photo";
+// Web K tags every playable bubble video with this class, then wraps round notes in .media-round
+// and GIF/animation in .media-gif-wrapper. Only the bare case is an ordinary re-uploadable video.
+const MESSAGE_VIDEO_SELECTOR = "video.media-video";
+const ROUND_VIDEO_SELECTOR = ".media-round";
+const MEDIA_CONTAINER_SELECTOR = ".attachment, .media-container";
+const ANIMATION_SELECTOR = ".media-gif-wrapper";
 const MESSAGE_ATTACHMENT_SELECTOR = ".attachment";
 const ACTIVE_MESSAGE_MENU_WRAPPER_SELECTOR = ".btn-menu.contextmenu.active";
 /**
@@ -227,12 +236,24 @@ export class TelegramDomAdapter {
     }
 
     const textElement = message.querySelector<HTMLElement>(MESSAGE_TEXT_SELECTOR);
-    const photos = Array.from(message.querySelectorAll<HTMLImageElement>(MESSAGE_PHOTO_SELECTOR));
+    const videos = Array.from(message.querySelectorAll<HTMLVideoElement>(MESSAGE_VIDEO_SELECTOR));
+    const video = videos.length === 1 ? this.readVideoSnapshot(videos[0]!) : null;
+    // Web K renders a video as a poster `img.media-photo` plus the `video` element in one media
+    // container. Counting that poster as a photo made every video look like "a video next to a
+    // photo", which capture rejects — and the poster is a thumbnail, never the message content.
+    const posterScope = videos
+      .map((element) => element.closest<HTMLElement>(MEDIA_CONTAINER_SELECTOR))
+      .filter((scope): scope is HTMLElement => scope !== null);
+    const photos = Array.from(
+      message.querySelectorAll<HTMLImageElement>(MESSAGE_PHOTO_SELECTOR),
+    ).filter((photo) => !posterScope.some((scope) => scope.contains(photo)));
     const attachments = Array.from(
       message.querySelectorAll<HTMLElement>(MESSAGE_ATTACHMENT_SELECTOR),
     );
     const hasUnsupportedAttachment = attachments.some(
-      (attachment) => !attachment.querySelector(MESSAGE_PHOTO_SELECTOR),
+      (attachment) =>
+        !attachment.querySelector(MESSAGE_PHOTO_SELECTOR) &&
+        !attachment.querySelector(MESSAGE_VIDEO_SELECTOR),
     );
     const grouped =
       message.matches(GROUPED_ITEM_SELECTOR) ||
@@ -252,7 +273,43 @@ export class TelegramDomAdapter {
         : null,
       imageUrl: photos[0]?.currentSrc || photos[0]?.src || null,
       imageCount: photos.length,
+      video,
+      videoCount: videos.length,
       hasUnsupportedAttachment,
+    };
+  }
+
+  /**
+   * Reads one ordinary video only when the browser already proved its intrinsic dimensions.
+   *
+   * A round video note and an animation are deliberately not videos here: re-uploading either
+   * through the media path would change the message's meaning, which the project treats as a
+   * different type rather than a lossy variant of this one.
+   */
+  private readVideoSnapshot(video: HTMLVideoElement): TelegramDomVideoSnapshot | null {
+    if (video.closest(ROUND_VIDEO_SELECTOR) || video.closest(ANIMATION_SELECTOR)) {
+      return null;
+    }
+
+    const url = video.currentSrc || video.src || "";
+    const durationSeconds = video.duration;
+    if (
+      !url ||
+      video.videoWidth <= 0 ||
+      video.videoHeight <= 0 ||
+      !Number.isFinite(durationSeconds) ||
+      durationSeconds <= 0
+    ) {
+      // Metadata arrives with the first frames. Without it the capture would have to invent
+      // dimensions that Telegram uses to build the upload, so it stays fail-closed.
+      return null;
+    }
+
+    return {
+      url,
+      width: video.videoWidth,
+      height: video.videoHeight,
+      durationSeconds,
     };
   }
 

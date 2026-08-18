@@ -54,7 +54,7 @@ pending → navigating → preparing → sending → sent
 | `acquire composer → preserve draft` | Composer принадлежит ожидаемому peer | `ComposerDraftTransaction` снял snapshot и освободил composer | Нет | `failed` до Send | Неподтверждённое restore → safety failure |
 | `preserve draft → prepare payload` | Composer считается чистым и принадлежит peer | Text точно прочитан обратно; либо готов один blob preview и проверена caption | Media arm 2 s; popup 5 s; preview 10 s; caption 2 s | Cleanup подготовленного text/preview; `failed` | Preview, который не удалось закрыть, оставляет ручную очистку |
 | `prepare payload → send` | Peer всё ещё активен; payload совпадает; нет reply/forward draft; ровно одна enabled Send button | Confirmation wait вооружён, затем callback помечает irreversible boundary и вызывается `button.click()` | Отдельного timeout нет | Ошибка до boundary → `failed` | Любая неоднозначность после boundary → `unknown` |
-| `send → confirm` | Send boundary пересечён; сохранён baseline outgoing `data-mid` | Появилась ровно одна новая `.bubble.is-out[data-mid][data-peer-id=peer]`, на ней/в ней нет `.sending` | 12 s | Нет: post-Send retry запрещён | Timeout, смена active peer, >1 новая bubble → `unknown` |
+| `send → confirm` | Send boundary пересечён; сохранён baseline outgoing `data-mid` | Появилась ровно одна новая `.bubble.is-out[data-mid][data-peer-id=peer]`, её mid уже не временный (не дробный) и на бабле нет `is-outgoing`/`is-sending`/`.sending` | 12 s, но пока отправка наблюдаемо идёт — до 5 min | Нет: post-Send retry запрещён | Timeout, смена active peer, >1 новая bubble, `is-error` → `unknown` |
 | `confirm → restore draft` | Попытка recipient завершена любым исходом | Draft прочитан обратно и совпал | Нет | Нет: restore выполняется в `finally` | Неподтверждённое restore → safety failure |
 | `restore draft → next recipient` | Предыдущий recipient имеет `sent`; cancel не запрошен | `nextPending()` возвращает следующего и цикл повторяется | Нет | Любой pre-Send `failed` сейчас останавливает весь batch | `unknown` останавливает batch и уничтожает retryable payload |
 | `next recipient → restore source chat` | Batch завершён любым terminal outcome | Exact peer proof исходного чата через owned composer | Тот же navigation timeout | Нет: выполняется в `finally` | Неподтверждённый возврат → safety failure |
@@ -106,6 +106,10 @@ pending → navigating → preparing → sending → sent
 - Следующий recipient не начинается до подтверждения предыдущего.
 - Один recipient получает не более одного вызова Send в одном run; sent recipient не возвращается в retry.
 - Send success требует нового outgoing `data-mid`, а не только click/закрытие preview.
+- Send success означает identity, выданную сервером, а не optimistic bubble Web K. Пока mid
+  временный (дробный) или бабл несёт `is-outgoing`/`is-sending`, следующий item не отправляется:
+  иначе Telegram нумерует одновременно загружаемые сообщения по скорости upload и bundle приходит
+  в перепутанном порядке.
 
 Эти правила при последующих исправлениях ослаблять нельзя.
 

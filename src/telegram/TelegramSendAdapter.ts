@@ -5,6 +5,11 @@ import type { TransferUnit } from "../domain/TransferUnit";
 import { DELIVERY_RETRY_POLICY } from "../delivery/DeliveryRetryPolicy";
 import type { Logger } from "../utils/logger";
 import { findActiveComposerContext, isActivePeer } from "./TelegramComposerDom";
+import {
+  isOutgoingAcknowledged,
+  isOutgoingInFlight,
+  isOutgoingRejected,
+} from "./outgoingMessageState";
 import { readTelegramText } from "./readTelegramText";
 
 const TEXT_SEND_BUTTON_SELECTOR = ".btn-send";
@@ -21,7 +26,6 @@ const REPLY_OR_FORWARD_DRAFT_SELECTOR = ".reply-wrapper";
 // Requiring data-mid avoids treating preview closure or a transient upload placeholder as success.
 const OUTGOING_BUBBLE_SELECTOR =
   ".bubble.is-out[data-mid][data-peer-id], .bubble.is-out .grouped-item[data-mid]";
-const PENDING_MESSAGE_SELECTOR = ".sending";
 const MESSAGE_TEXT_SELECTOR = ".message";
 const MESSAGE_TIME_SELECTOR = ".time";
 const MESSAGE_LAYOUT_FIX_SELECTOR = ".clearfix";
@@ -42,6 +46,8 @@ interface OutgoingWait {
   readonly signal: AbortSignal;
   timeoutId: number | null;
   sendClicked: boolean;
+  sendClickedAt: number | null;
+  inFlightLogged: boolean;
   reconciliationAttempt: number;
   uncertaintyReason: string | null;
   finish(result: TelegramSendResult): void;
@@ -104,6 +110,7 @@ export class TelegramSendAdapter {
       // Marking the boundary immediately before invoking the native control is deliberately
       // conservative: if browser dispatch itself becomes ambiguous, retrying could duplicate.
       wait.sendClicked = true;
+      wait.sendClickedAt = Date.now();
       onSendClicked();
       button.click();
       this.checkActiveWait();
@@ -276,6 +283,8 @@ export class TelegramSendAdapter {
         signal,
         timeoutId: null,
         sendClicked: false,
+        sendClickedAt: null,
+        inFlightLogged: false,
         reconciliationAttempt: 0,
         uncertaintyReason: null,
         finish: (result) => {
@@ -317,6 +326,31 @@ export class TelegramSendAdapter {
       wait.finish({ status: "failed", message: "Подтверждение было отменено до Send." });
       return;
     }
+    if (this.hasOutgoingInFlight(wait)) {
+      // A large upload legitimately outlives the confirmation timeout. Reporting `unknown` while
+      // Telegram is visibly still sending our own message would stop the batch over a message that
+      // is on its way, so the wait follows the observable upload instead of the clock.
+      const waitedMs = Date.now() - (wait.sendClickedAt ?? Date.now());
+      if (waitedMs < DELIVERY_RETRY_POLICY.inFlightConfirmationTimeoutMs) {
+        if (!wait.inFlightLogged) {
+          wait.inFlightLogged = true;
+          this.log.debug("Telegram ещё отправляет это сообщение; подтверждение продолжает ждать.", {
+            peerKey: wait.expectedPeerKey,
+            maxWaitMs: DELIVERY_RETRY_POLICY.inFlightConfirmationTimeoutMs,
+          });
+        }
+        wait.timeoutId = window.setTimeout(
+          () => this.reconcileAfterTimeout(wait),
+          DELIVERY_RETRY_POLICY.inFlightPollIntervalMs,
+        );
+        return;
+      }
+      wait.finish({
+        status: "unknown",
+        message: "Telegram не завершил отправку сообщения за отведённое время; batch остановлен.",
+      });
+      return;
+    }
 
     const delayMs = DELIVERY_RETRY_POLICY.reconciliationBackoffMs[wait.reconciliationAttempt];
     if (delayMs === undefined) {
@@ -344,10 +378,7 @@ export class TelegramSendAdapter {
     if (!wait || !wait.sendClicked) {
       return;
     }
-    const newMessages = this.findOutgoingBubbles(wait.expectedPeerKey).filter((bubble) => {
-      const messageId = bubble.dataset.mid;
-      return Boolean(messageId && !wait.baselineIds.has(messageId));
-    });
+    const newMessages = this.findNewOutgoing(wait);
     if (newMessages.length > wait.expectedCount) {
       wait.finish({
         status: "unknown",
@@ -357,17 +388,25 @@ export class TelegramSendAdapter {
     }
 
     if (newMessages.length !== wait.expectedCount) return;
+    if (newMessages.some((message) => isOutgoingRejected(message))) {
+      wait.finish({
+        status: "unknown",
+        message: "Telegram отметил отправленное сообщение как неудачное; batch остановлен.",
+      });
+      return;
+    }
     const messageIds = newMessages
       .map((message) => message.dataset.mid)
       .filter((messageId): messageId is string => Boolean(messageId));
-    const allTerminal = newMessages.every(
-      (message) => !message.matches(PENDING_MESSAGE_SELECTOR) && !message.querySelector(PENDING_MESSAGE_SELECTOR),
-    );
+    // Success is the server identity, not the optimistic bubble. Reporting the bubble as sent
+    // released the next unit while this one was still uploading, and Telegram then numbered the
+    // two messages by whichever upload finished first, so a bundle could arrive reordered.
+    const allAcknowledged = newMessages.every((message) => isOutgoingAcknowledged(message));
     const payloadMatches = wait.payload
       ? this.matchesPayloadWhenObservable(newMessages[0]!, wait.payload)
       : true;
     const groupMatches = wait.unit?.kind !== "media-group" || this.hasOneOutgoingGroup(newMessages);
-    if (messageIds.length === wait.expectedCount && allTerminal && payloadMatches && groupMatches) {
+    if (messageIds.length === wait.expectedCount && allAcknowledged && payloadMatches && groupMatches) {
       wait.finish({
         status: "sent",
         messageId: messageIds[0]!,
@@ -391,6 +430,17 @@ export class TelegramSendAdapter {
       ignoredSelectors: [MESSAGE_TIME_SELECTOR, MESSAGE_LAYOUT_FIX_SELECTOR],
     });
     return normalizeText(observed).trim() === normalizeText(payload.text).trim();
+  }
+
+  private findNewOutgoing(wait: OutgoingWait): HTMLElement[] {
+    return this.findOutgoingBubbles(wait.expectedPeerKey).filter((bubble) => {
+      const messageId = bubble.dataset.mid;
+      return Boolean(messageId && !wait.baselineIds.has(messageId));
+    });
+  }
+
+  private hasOutgoingInFlight(wait: OutgoingWait): boolean {
+    return this.findNewOutgoing(wait).some((message) => isOutgoingInFlight(message));
   }
 
   private captureOutgoingIds(peerKey: string): ReadonlySet<string> {

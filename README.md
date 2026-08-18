@@ -26,7 +26,7 @@
 |---|---|---|---|
 | Plain text | DOM fallback или verified Telegram model | Text composer + native Send | Поддерживается end-to-end; политика link preview — только `regenerate` |
 | Photo | Полные bytes, имя и MIME | `Photo or Video` preview + native confirm | Поддерживается; только plain caption без entities |
-| Video | Verified model + полные bytes/metadata | `Photo or Video` preview + native confirm | **Не поддерживается production capture:** delivery strategy тестируется только synthetic model fixtures, пока нет verified model bridge |
+| Video | DOM capture полных bytes + размеры/длительность из `<video>` | `Photo or Video` preview + native confirm | Поддерживается: одно обычное видео, опционально с plain caption. Требуется загруженная браузером metadata; Telegram перекодирует видео при загрузке |
 | GIF/animation | Verified model + полные bytes/metadata | `Photo or Video` preview + native confirm | **Не поддерживается production capture:** strategy test-only; Telegram также может транскодировать media |
 | Document | Verified model + полные bytes/имя/MIME | `Document` preview + native confirm | **Не поддерживается production capture:** strategy test-only; thumbnail не считается содержимым файла |
 | Audio/music | Verified model + полные bytes/metadata | `Document` preview + native confirm | **Не поддерживается production capture:** strategy test-only; voice message не преобразуется в audio file |
@@ -53,7 +53,10 @@
 - exact peer подтверждается реальным contenteditable composer внутри единственного active main-chat, а не URL/title или глобальным composer;
 - каждый search retry заново получает одноразовую row; закрытие search имеет completion barrier перед следующим peer;
 - пользовательский plain-text draft временно освобождается и восстанавливается после попытки recipient;
-- успех требует нового terminal outgoing `data-mid`; закрытие preview и очистка composer успехом не считаются;
+- успех требует нового outgoing `data-mid`, подтверждённого сервером Telegram: пока Web K держит
+  временный дробный mid либо классы `is-outgoing`/`is-sending`, отправка не завершена. Именно это
+  сохраняет порядок bundle — следующий item не уходит, пока предыдущий ещё загружается. Закрытие
+  preview и очистка composer успехом не считаются;
 - album подтверждается только полным ожидаемым набором новых grouped `data-mid`;
 - automatic retry ограничен и разрешён только до Send;
 - после Send повтор item/group запрещён; неоднозначность становится `unknown` и останавливает batch;
@@ -86,7 +89,10 @@ Recipient status вычисляется из вложенных item/group state
 - для album отклоняются incomplete group, несовместимое native partitioning, animation внутри группы и caption boundaries, которые нельзя сохранить;
 - browser E2E с авторизованной сессией не входит в автоматическую suite; реальные Send необходимо проверять только в контролируемых чатах.
 - DOM-контракт должен сверяться с исходным кодом Web K, а не с записями ручного исследования: три селектора уже отличались от реального кода и молча отключали интеграцию именно на мобильных и в selection mode, при полностью зелёной suite. Фикстуры воспроизводят предположения автора, поэтому сами по себе несовпадение контракта не ловят.
-- production bootstrap пока не предоставляет verified read-only Telegram model bridge; video/document/audio/album strategies не являются production support.
+- production bootstrap пока не предоставляет verified read-only Telegram model bridge; document/audio/album strategies не являются production support;
+- video captured из DOM: поддерживается ровно одно обычное видео в сообщении, без photo рядом и вне album. Video note (кружок) и GIF/animation намеренно не считаются video, потому что повторная отправка через media path изменила бы смысл сообщения;
+- байты видео собираются полностью до отправки. Telegram отдаёт их своим service worker по частям, поэтому неизвестный общий размер или обрыв передачи отклоняются: усечённый файл остаётся воспроизводимым видео и молча заменил бы оригинал;
+- capture видео начинается только после того, как браузер сообщил его реальные размеры и длительность. До этого сообщение отклоняется, а не отправляется одной подписью.
 
 ## Установка
 
@@ -103,8 +109,8 @@ npm run validate
 
 После новой сборки нужно повторно заменить код в Tampermonkey: уже установленная
 копия не синхронизируется с локальным `dist` автоматически. Текущий релиз —
-`0.1.8`; версия показывается не только в userscript header, но и в заголовках
-picker/progress UI. Если там нет `v0.1.8`, новый runtime не запущен.
+`0.1.9`; версия показывается не только в userscript header, но и в заголовках
+picker/progress UI. Если там нет `v0.1.9`, новый runtime не запущен.
 
 Сборка содержит header с `@match https://web.telegram.org/k/*`.
 
@@ -146,7 +152,9 @@ Payload и binary Blob живут только в памяти. `localStorage`, 
 - selection mode: смешанный набор text, photo и photo + caption, запущенный и из нижней панели выделения, и из контекстного меню выделения;
 - холодная перезагрузка вкладки с установленным userscript: Telegram Web K должен полностью загрузиться без зависания;
 - source chat также выбран recipient;
-- photo и photo + caption; video/document/audio — только после подключения verified production model bridge;
+- photo и photo + caption; document/audio — только после подключения verified production model bridge;
+- одно видео и видео + caption, включая большое видео, которое Telegram отдаёт частями;
+- видео, у которого ещё не загрузилась metadata, и видео-кружок: оба должны быть отклонены до recipient picker;
 - compatible photo/video album — только после подключения model bridge: один native Send и полный grouped result;
 - пользовательский draft в destination до success, pre-Send failure и Cancel;
 - recipient/composer/upload-preview rerender;

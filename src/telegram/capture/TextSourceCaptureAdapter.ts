@@ -17,7 +17,11 @@ export class TextSourceCaptureAdapter implements SourceCaptureAdapter {
   public supports(snapshot: TelegramSourceSnapshot): boolean {
     return snapshot.identityResolution === "telegram-model"
       ? snapshot.content.kind === "text"
-      : snapshot.imageCount === 0 && !snapshot.hasUnsupportedAttachment;
+      // A media bubble carries its text as a caption, so claiming it here would send the caption
+      // alone and silently drop the media it belongs to.
+      : snapshot.imageCount === 0 &&
+        snapshot.videoCount === 0 &&
+        !snapshot.hasUnsupportedAttachment;
   }
 
   /** Copies text/entities into a detached unit and rejects malformed UTF-16 entity ranges. */

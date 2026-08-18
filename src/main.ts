@@ -15,6 +15,7 @@ import { TelegramSelectionDomAdapter } from "./telegram/TelegramSelectionDomAdap
 import { TelegramSelectionIntegration } from "./telegram/TelegramSelectionIntegration";
 import { TelegramSendAdapter } from "./telegram/TelegramSendAdapter";
 import { UploadPreviewAdapter } from "./telegram/UploadPreviewAdapter";
+import { CaptureNotice } from "./ui/CaptureNotice";
 import { DeliveryProgressPanel } from "./ui/DeliveryProgressPanel";
 import { RecipientPicker } from "./ui/RecipientPicker";
 import { logger } from "./utils/logger";
@@ -68,6 +69,7 @@ function bootstrap(): void {
       new TelegramSelectionIntegration(logger),
       recipientController,
       logger,
+      new CaptureNotice(),
     );
 
     runtime.start(controller);

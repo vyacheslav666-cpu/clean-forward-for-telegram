@@ -1,6 +1,6 @@
 {
   "name": "clean-forward-for-telegram",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Experimental Tampermonkey userscript for preparing clean copies of Telegram messages.",
   "private": true,
   "license": "MIT",

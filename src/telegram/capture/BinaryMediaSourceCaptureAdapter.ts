@@ -9,6 +9,7 @@ import {
   type TransferMediaItem,
 } from "../../domain/TransferableContent";
 import { createFileTransferUnit, type FileTransferUnit } from "../../domain/TransferUnit";
+import { fetchMediaBytes, MediaBytesError } from "../fetchMediaBytes";
 import type { TelegramSourceSnapshot } from "../TelegramSourceSnapshot";
 import {
   CaptureAdapterError,
@@ -18,6 +19,11 @@ import {
 } from "./SourceCaptureAdapter";
 
 const DEFAULT_IMAGE_FILE_NAME = "telegram-image.jpg";
+const VIDEO_FILE_EXTENSIONS: Readonly<Record<string, string>> = Object.freeze({
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
+});
 const MAX_CAPTURE_BINARY_BYTES = 64 * 1024 * 1024;
 
 /** Materializes one uploadable binary unit without using thumbnail or mounted source DOM later. */
@@ -26,7 +32,7 @@ export class BinaryMediaSourceCaptureAdapter implements SourceCaptureAdapter {
   public supports(snapshot: TelegramSourceSnapshot): boolean {
     return snapshot.identityResolution === "telegram-model"
       ? snapshot.content.kind === "binary"
-      : snapshot.imageCount > 0 || Boolean(snapshot.imageUrl);
+      : snapshot.imageCount > 0 || Boolean(snapshot.imageUrl) || snapshot.video !== null;
   }
 
   /** Produces one independent file unit after all full-byte metadata checks pass. */
@@ -44,6 +50,9 @@ export class BinaryMediaSourceCaptureAdapter implements SourceCaptureAdapter {
     const { snapshot, descriptor, signal } = context;
     throwIfCaptureAborted(signal);
     if (snapshot.identityResolution === "dom-fallback") {
+      if (snapshot.video) {
+        return this.captureDomVideo(context);
+      }
       if (
         snapshot.imageCount !== 1 ||
         !snapshot.imageUrl ||
@@ -95,9 +104,70 @@ export class BinaryMediaSourceCaptureAdapter implements SourceCaptureAdapter {
     });
   }
 
+  /**
+   * Captures one ordinary bubble video as full bytes.
+   *
+   * Telegram re-encodes on upload, so the copy is a new video rather than a byte-identical one.
+   * What must not happen is a silently truncated file, which is why byte acquisition proves the
+   * complete length before anything reaches the bundle.
+   */
+  private async captureDomVideo(
+    context: SourceCaptureAdapterContext,
+  ): Promise<TransferMediaItem> {
+    const { snapshot, descriptor, signal } = context;
+    if (snapshot.identityResolution !== "dom-fallback" || !snapshot.video) {
+      throw new CaptureAdapterError("invalid-model", "Expected one ordinary DOM video.");
+    }
+    if (
+      snapshot.videoCount !== 1 ||
+      snapshot.imageCount > 0 ||
+      snapshot.hasUnsupportedAttachment ||
+      snapshot.group.kind !== "none"
+    ) {
+      throw new CaptureAdapterError(
+        "unsupported-type",
+        "DOM video fallback requires exactly one ordinary ungrouped video.",
+      );
+    }
+
+    const video = snapshot.video;
+    let bytes;
+    try {
+      bytes = await fetchMediaBytes(video.url, MAX_CAPTURE_BINARY_BYTES, signal);
+    } catch (error) {
+      if (error instanceof MediaBytesError) {
+        throw new CaptureAdapterError("unavailable-media", error.message);
+      }
+      throw error;
+    }
+    throwIfCaptureAborted(signal);
+    if (!bytes.mimeType.startsWith("video/")) {
+      throw new CaptureAdapterError(
+        "unavailable-media",
+        `Bubble video was served as ${bytes.mimeType}, which is not a video upload.`,
+      );
+    }
+
+    return this.createItem({
+      blob: bytes.blob,
+      fileName: `telegram-video.${VIDEO_FILE_EXTENSIONS[bytes.mimeType] ?? "mp4"}`,
+      mimeType: bytes.mimeType,
+      declaredSize: bytes.blob.size,
+      metadata: {
+        kind: "video",
+        width: video.width,
+        height: video.height,
+        durationSeconds: video.durationSeconds,
+        supportsStreaming: true,
+      },
+      caption: snapshot.text ? { text: snapshot.text, entities: [] } : null,
+      order: descriptor.order,
+    });
+  }
+
   private readRole(snapshot: TelegramSourceSnapshot): FileTransferUnit["role"] {
     if (snapshot.identityResolution === "dom-fallback") {
-      return "photo";
+      return snapshot.video ? "video" : "photo";
     }
     if (snapshot.content.kind !== "binary") {
       throw new CaptureAdapterError("invalid-model", "Expected verified binary role.");

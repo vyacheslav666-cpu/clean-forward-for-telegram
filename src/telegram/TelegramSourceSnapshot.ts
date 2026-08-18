@@ -19,6 +19,15 @@ export type TelegramMessageGroupSnapshot =
       readonly expectedItemCount: number;
     };
 
+/** One ordinary video read from the bubble, already discriminated from round notes and GIFs. */
+export interface TelegramDomVideoSnapshot {
+  /** Browser-owned media URL consumed during atomic capture and never retained in the bundle. */
+  readonly url: string;
+  readonly width: number;
+  readonly height: number;
+  readonly durationSeconds: number;
+}
+
 /**
  * Detached message snapshot containing no Telegram model object, DOM node, or session data.
  * Browser-owned media URLs are consumed during atomic capture and never retained in the bundle.
@@ -32,6 +41,8 @@ export interface TelegramMessageSnapshot {
   readonly text: string | null;
   readonly imageUrl: string | null;
   readonly imageCount: number;
+  readonly video: TelegramDomVideoSnapshot | null;
+  readonly videoCount: number;
   readonly hasUnsupportedAttachment: boolean;
 }
 
