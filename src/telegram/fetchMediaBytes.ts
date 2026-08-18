@@ -4,6 +4,16 @@ const RANGE_CHUNK_BYTES = 1024 * 1024;
 /** Upper bound on round trips so a stalling stream cannot loop until the tab dies. */
 const MAX_RANGE_REQUESTS = 4096;
 const CONTENT_RANGE_PATTERN = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i;
+/**
+ * Web K's service worker persists every stream chunk it serves into this CacheStorage and reads
+ * 20 MB ahead of each one (`src/lib/serviceWorker/stream.ts`). Reading a whole video therefore
+ * costs its full size in storage on the very origin that also holds the Telegram session, so this
+ * module both refuses a capture that would not fit and drops what it caused afterwards.
+ */
+const STREAM_CHUNK_CACHE_NAME = "cachedStreamChunks";
+const STREAM_PRELOAD_BYTES = 20 * 1024 * 1024;
+const STORAGE_SAFETY_MARGIN_BYTES = 64 * 1024 * 1024;
+const STREAM_URL_MARKER = "/stream/";
 
 /** Complete in-memory bytes with the MIME type the browser actually served them under. */
 export interface FetchedMediaBytes {
@@ -49,35 +59,119 @@ export async function fetchMediaBytes(
       `Media is ${totalBytes} bytes, above the ${maxBytes} byte capture limit.`,
     );
   }
+  await requireStorageHeadroom(totalBytes);
 
-  const parts: BlobPart[] = [];
-  let received = 0;
-  let response = first;
-  for (let request = 0; request < MAX_RANGE_REQUESTS; request += 1) {
-    const chunk = await response.arrayBuffer();
-    if (chunk.byteLength === 0) {
-      throw new MediaBytesError("Media stream stopped returning bytes before the end of the file.");
+  try {
+    const parts: BlobPart[] = [];
+    let received = 0;
+    let response = first;
+    for (let request = 0; request < MAX_RANGE_REQUESTS; request += 1) {
+      const chunk = await response.arrayBuffer();
+      if (chunk.byteLength === 0) {
+        throw new MediaBytesError("Media stream stopped returning bytes before the end of the file.");
+      }
+      parts.push(chunk);
+      received += chunk.byteLength;
+      if (received >= totalBytes) {
+        break;
+      }
+      response = await requestRange(
+        url,
+        received,
+        Math.min(received + RANGE_CHUNK_BYTES, totalBytes) - 1,
+        signal,
+      );
     }
-    parts.push(chunk);
-    received += chunk.byteLength;
-    if (received >= totalBytes) {
-      break;
+
+    if (received !== totalBytes) {
+      throw new MediaBytesError(
+        `Media transfer ended at ${received} of ${totalBytes} bytes; a partial upload is never sent.`,
+      );
     }
-    response = await requestRange(
-      url,
-      received,
-      Math.min(received + RANGE_CHUNK_BYTES, totalBytes) - 1,
-      signal,
-    );
-  }
 
-  if (received !== totalBytes) {
-    throw new MediaBytesError(
-      `Media transfer ended at ${received} of ${totalBytes} bytes; a partial upload is never sent.`,
-    );
+    return { blob: new Blob(parts, { type: mimeType }), mimeType };
+  } finally {
+    await releaseCachedStreamChunks(url);
   }
+}
 
-  return { blob: new Blob(parts, { type: mimeType }), mimeType };
+/**
+ * Refuses a capture that Telegram's own storage cannot absorb.
+ *
+ * Running this origin out of quota is not a local failure: Web K keeps its session and state here
+ * too, and a full origin makes Telegram fail to write its own data. An unavailable estimate is not
+ * treated as a refusal, because that would block every capture on browsers that do not report one.
+ */
+async function requireStorageHeadroom(totalBytes: number): Promise<void> {
+  const estimate = await readStorageEstimate();
+  if (!estimate) {
+    return;
+  }
+  const free = estimate.quota - estimate.usage;
+  const required = totalBytes + STREAM_PRELOAD_BYTES + STORAGE_SAFETY_MARGIN_BYTES;
+  if (free >= required) {
+    return;
+  }
+  throw new MediaBytesError(
+    `Telegram storage has ${describeMegabytes(free)} free, and copying this media needs ` +
+      `${describeMegabytes(required)}. The capture stopped so Telegram keeps room for its own data.`,
+  );
+}
+
+async function readStorageEstimate(): Promise<{ usage: number; quota: number } | null> {
+  try {
+    const estimate = await navigator.storage?.estimate?.();
+    return typeof estimate?.usage === "number" && typeof estimate?.quota === "number"
+      ? { usage: estimate.usage, quota: estimate.quota }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Drops the chunks this read made Telegram persist.
+ *
+ * Playing a video caches only the part that was watched; reading one whole file for a copy leaves
+ * the whole file behind. Deleting them is safe by construction — it is a cache, and Web K
+ * re-downloads a chunk it no longer finds.
+ */
+async function releaseCachedStreamChunks(url: string): Promise<void> {
+  const documentId = readStreamDocumentId(url);
+  if (!documentId || typeof caches === "undefined") {
+    return;
+  }
+  try {
+    const cache = await caches.open(STREAM_CHUNK_CACHE_NAME);
+    const requests = await cache.keys();
+    await Promise.all(
+      requests
+        .filter((request) => request.url.includes(`${documentId}?offset=`))
+        .map((request) => cache.delete(request)),
+    );
+  } catch {
+    // Best effort: failing to tidy Telegram's cache must never fail an otherwise valid capture.
+  }
+}
+
+function readStreamDocumentId(url: string): string | null {
+  const index = url.indexOf(STREAM_URL_MARKER);
+  if (index < 0) {
+    return null;
+  }
+  try {
+    const info: unknown = JSON.parse(
+      decodeURIComponent(url.slice(index + STREAM_URL_MARKER.length).split("?")[0] ?? ""),
+    );
+    const id = (info as { location?: { id?: unknown } })?.location?.id;
+    return typeof id === "string" || typeof id === "number" ? String(id) : null;
+  } catch {
+    return null;
+  }
+}
+
+function describeMegabytes(bytes: number): string {
+  return `${Math.max(0, Math.round(bytes / (1024 * 1024)))} MB`;
 }
 
 async function readWholeResponse(

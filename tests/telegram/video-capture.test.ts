@@ -14,6 +14,9 @@ import type { TelegramMessageSnapshot } from "../../src/telegram/TelegramSourceS
 
 const STREAM_URL = "https://web.telegram.org/k/stream/fixture";
 const MIME = "video/mp4";
+const STREAM_INFO = { location: { id: "5309876543210" }, size: 10, mimeType: MIME };
+const CACHED_STREAM_URL =
+  `https://web.telegram.org/k/stream/${encodeURIComponent(JSON.stringify(STREAM_INFO))}`;
 
 function snapshot(overrides: Partial<TelegramMessageSnapshot> = {}): TelegramMessageSnapshot {
   return {
@@ -108,6 +111,47 @@ describe("media byte acquisition", () => {
     installStreamServer(4096);
     await expect(fetchMediaBytes(STREAM_URL, 1024)).rejects.toThrow(/capture limit/);
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Web K's service worker caches every chunk it serves into this origin's storage — the same
+   * origin that holds the Telegram session — so a copy that does not fit must not be started.
+   */
+  it("refuses a capture that Telegram's own storage cannot absorb", async () => {
+    installStreamServer(10, 4);
+    Object.defineProperty(navigator, "storage", {
+      configurable: true,
+      value: { estimate: async () => ({ usage: 1_000_000_000, quota: 1_010_000_000 }) },
+    });
+
+    try {
+      await expect(fetchMediaBytes(STREAM_URL, 1024)).rejects.toThrow(/room for its own data/);
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    } finally {
+      Reflect.deleteProperty(navigator, "storage");
+    }
+  });
+
+  it("reads media normally when the browser reports no storage estimate", async () => {
+    installStreamServer(10, 4);
+    await expect(fetchMediaBytes(STREAM_URL, 1024)).resolves.toMatchObject({ mimeType: MIME });
+  });
+
+  it("drops only the stream chunks this read made Telegram cache", async () => {
+    installStreamServer(10, 4);
+    const mine = "https://web.telegram.org/1-5309876543210?offset=0&limit=524288";
+    const other = "https://web.telegram.org/1-777?offset=0&limit=524288";
+    const deleted: string[] = [];
+    vi.stubGlobal("caches", {
+      open: vi.fn(async () => ({
+        keys: async () => [{ url: mine }, { url: other }] as unknown as Request[],
+        delete: async (request: Request) => { deleted.push(request.url); return true; },
+      })),
+    });
+
+    await fetchMediaBytes(CACHED_STREAM_URL, 1024);
+
+    expect(deleted).toEqual([mine]);
   });
 });
 
