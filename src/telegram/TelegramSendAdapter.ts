@@ -5,6 +5,7 @@ import type { TransferUnit } from "../domain/TransferUnit";
 import { DELIVERY_RETRY_POLICY } from "../delivery/DeliveryRetryPolicy";
 import type { Logger } from "../utils/logger";
 import { findActiveComposerContext, isActivePeer } from "./TelegramComposerDom";
+import { isOutgoingAcknowledged } from "./outgoingMessageState";
 import { readTelegramText } from "./readTelegramText";
 
 const TEXT_SEND_BUTTON_SELECTOR = ".btn-send";
@@ -21,7 +22,6 @@ const REPLY_OR_FORWARD_DRAFT_SELECTOR = ".reply-wrapper";
 // Requiring data-mid avoids treating preview closure or a transient upload placeholder as success.
 const OUTGOING_BUBBLE_SELECTOR =
   ".bubble.is-out[data-mid][data-peer-id], .bubble.is-out .grouped-item[data-mid]";
-const PENDING_MESSAGE_SELECTOR = ".sending";
 const MESSAGE_TEXT_SELECTOR = ".message";
 const MESSAGE_TIME_SELECTOR = ".time";
 const MESSAGE_LAYOUT_FIX_SELECTOR = ".clearfix";
@@ -360,9 +360,9 @@ export class TelegramSendAdapter {
     const messageIds = newMessages
       .map((message) => message.dataset.mid)
       .filter((messageId): messageId is string => Boolean(messageId));
-    const allTerminal = newMessages.every(
-      (message) => !message.matches(PENDING_MESSAGE_SELECTOR) && !message.querySelector(PENDING_MESSAGE_SELECTOR),
-    );
+    // Telegram assigns a temporary fractional data-mid before the server answers, so the presence
+    // of an id is not proof of delivery; only the acknowledged state is.
+    const allTerminal = newMessages.every(isOutgoingAcknowledged);
     const payloadMatches = wait.payload
       ? this.matchesPayloadWhenObservable(newMessages[0]!, wait.payload)
       : true;
