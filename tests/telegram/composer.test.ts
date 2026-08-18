@@ -11,6 +11,52 @@ import { UploadPreviewAdapter } from "../../src/telegram/UploadPreviewAdapter";
 import { readTelegramText } from "../../src/telegram/readTelegramText";
 import { createLogger, installComposer } from "../helpers";
 
+/** Installs the active main-chat pane TWeb owns, which is what scopes the cleanup check. */
+function installChatPane(peerKey: string): HTMLElement {
+  const column = document.createElement("section");
+  column.id = "column-center";
+  const chats = document.createElement("div");
+  chats.className = "chats-container";
+  const chat = document.createElement("div");
+  chat.className = "chat tabs-tab active";
+  const owner = document.createElement("div");
+  owner.className = "chat-input chat-input-main";
+  const composer = document.createElement("div");
+  composer.className = "input-message-input";
+  composer.setAttribute("contenteditable", "true");
+  composer.dataset.peerId = peerKey;
+  owner.append(composer);
+  chat.append(owner);
+  chats.append(chat);
+  column.append(chats);
+  document.body.append(column);
+  return chat;
+}
+
+/** Builds the outgoing bubble Web K renders while it is still trying to deliver a message. */
+function appendInFlightOutgoing(parent: ParentNode, peerKey: string, messageId: string): HTMLElement {
+  const bubble = document.createElement("div");
+  bubble.className = "bubble is-out is-outgoing is-sending";
+  bubble.dataset.peerId = peerKey;
+  bubble.dataset.mid = messageId;
+  parent.append(bubble);
+  return bubble;
+}
+
+function installClosablePreview(onClose: () => void = () => undefined): HTMLElement {
+  const popup = document.createElement("div");
+  popup.className = "popup-send-photo popup-new-media active";
+  const close = document.createElement("button");
+  close.className = "popup-close";
+  close.addEventListener("click", () => {
+    popup.remove();
+    onClose();
+  });
+  popup.append(close);
+  document.body.append(popup);
+  return popup;
+}
+
 function imagePayload(caption?: string): ImageDeliveryPayload {
   return {
     kind: "image",
@@ -347,24 +393,40 @@ describe("ComposerAdapter", () => {
   });
 
   it("ignores outgoing traffic in other chats when confirming cleanup", async () => {
-    const composer = installComposer("8");
-    const popup = document.createElement("div");
-    popup.className = "popup-send-photo popup-new-media active";
-    const close = document.createElement("button");
-    close.className = "popup-close";
-    close.addEventListener("click", () => popup.remove());
-    popup.append(close);
-    document.body.append(popup);
-    // A message being sent elsewhere in Telegram says nothing about this preview's cleanup.
-    const elsewhere = document.createElement("div");
-    elsewhere.className = "sending";
-    document.body.append(elsewhere);
+    const chat = installChatPane("8");
+    installClosablePreview(() => {
+      // A message being sent elsewhere in Telegram says nothing about this preview's cleanup.
+      appendInFlightOutgoing(document.body, "42", "500.0001");
+    });
     const adapter = new UploadPreviewAdapter();
 
     expect(await adapter.cancelActivePreview()).toBe(true);
 
     expect(adapter.describeCancelObstacle()).toBeNull();
-    expect(composer.isConnected).toBe(true);
+    expect(chat.isConnected).toBe(true);
+  });
+
+  it("fails cleanup when closing the preview started a send in the recipient chat", async () => {
+    const chat = installChatPane("8");
+    installClosablePreview(() => appendInFlightOutgoing(chat, "8", "500.0001"));
+    const adapter = new UploadPreviewAdapter();
+
+    expect(await adapter.cancelActivePreview()).toBe(false);
+
+    expect(adapter.describeCancelObstacle()).toContain("началась отправка");
+  });
+
+  it("ignores a send that was already in flight before the preview was closed", async () => {
+    // A message stuck since an offline session is not this preview's doing, and reporting it
+    // would stop the whole batch for safety over unrelated traffic.
+    const chat = installChatPane("8");
+    appendInFlightOutgoing(chat, "8", "499.0001");
+    installClosablePreview();
+    const adapter = new UploadPreviewAdapter();
+
+    expect(await adapter.cancelActivePreview()).toBe(true);
+
+    expect(adapter.describeCancelObstacle()).toBeNull();
   });
 
   it("preserves a ready preview when the caption editor is unavailable", async () => {

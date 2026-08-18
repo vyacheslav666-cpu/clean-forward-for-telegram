@@ -4,6 +4,7 @@ import type { TransferUnit } from "../domain/TransferUnit";
 import { isActivePeer, isComposerEmpty, findActiveComposerContext } from "./TelegramComposerDom";
 import { TelegramIntegrationError } from "./TelegramIntegrationError";
 import { insertTextNatively } from "./nativeTextEditing";
+import { OutgoingInFlightBaseline } from "./outgoingMessageState";
 import { readTelegramText } from "./readTelegramText";
 import { waitForCondition } from "./waitForCondition";
 
@@ -17,7 +18,6 @@ const CAPTION_EDITOR_SELECTOR =
 const CONFIRM_BUTTON_SELECTOR = ".simple-message-input-confirm";
 const CLOSE_BUTTON_SELECTOR = ".popup-close";
 const UNSTABLE_EDITOR_SELECTOR = ".animating, .is-changing-height";
-const SENDING_SELECTOR = ".sending";
 const UNREADY_MEDIA_SELECTOR = ".preloader, .render-progress";
 const POPUP_APPEAR_TIMEOUT_MS = 5_000;
 const PREVIEW_READY_TIMEOUT_MS = 10_000;
@@ -191,6 +191,9 @@ export class UploadPreviewAdapter {
     if (previews.length === 0) {
       return true;
     }
+    // Taken before the close is requested, so the question stays "did closing this preview send
+    // something" instead of "is anything being sent at all".
+    const outgoingBefore = new OutgoingInFlightBaseline(document);
 
     if (previews.length !== 1) {
       this.cancelObstacle = `Telegram открыл несколько preview одновременно (${previews.length}).`;
@@ -225,10 +228,12 @@ export class UploadPreviewAdapter {
     }
     // Scoped to the destination chat on purpose: this proves that closing the preview did not
     // send anything here. A document-wide match also caught unrelated outgoing messages
-    // elsewhere in Telegram and turned ordinary traffic into a cleanup failure.
+    // elsewhere in Telegram and turned ordinary traffic into a cleanup failure. For the same
+    // reason only messages that were not already in flight count: a send stuck since an offline
+    // session is not this preview's doing, and reporting it stops the batch for safety.
     const sendingScope = composer?.chat ?? null;
-    if (sendingScope?.querySelector(SENDING_SELECTOR)) {
-      this.cancelObstacle = "После закрытия preview в чате получателя осталась отправка.";
+    if (sendingScope && outgoingBefore.findNew(sendingScope).length > 0) {
+      this.cancelObstacle = "После закрытия preview в чате получателя началась отправка.";
       return false;
     }
 
@@ -312,7 +317,9 @@ export class UploadPreviewAdapter {
       !captionEditor ||
       !confirm ||
       confirm.disabled ||
-      popup.querySelector(`${SENDING_SELECTOR}, ${UNREADY_MEDIA_SELECTOR}`)
+      // Only media readiness is observable here. Sending state is a message-bubble class that
+      // never appears inside the preview popup, so requiring its absence proved nothing.
+      popup.querySelector(UNREADY_MEDIA_SELECTOR)
     ) {
       return null;
     }

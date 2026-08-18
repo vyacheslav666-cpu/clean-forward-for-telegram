@@ -12,7 +12,7 @@ function appendOutgoing(
   text = "fixture-text",
 ): HTMLElement {
   const bubble = document.createElement("div");
-  bubble.className = `bubble is-out${pending ? " sending" : ""}`;
+  bubble.className = `bubble is-out${pending ? " is-outgoing is-sending" : ""}`;
   bubble.dataset.peerId = peerKey;
   bubble.dataset.mid = messageId;
   const message = document.createElement("span");
@@ -188,12 +188,12 @@ describe("TelegramSendAdapter", () => {
     });
     await Promise.resolve();
     expect(settled).toBe(false);
-    (bubble as unknown as HTMLElement).classList.remove("sending");
+    (bubble as unknown as HTMLElement).classList.remove("is-outgoing", "is-sending");
     adapter.notifyDomChanged();
     expect(await sending).toEqual({ status: "sent", messageId: "new-mid" });
   });
 
-  it("confirms delivery when Telegram removes only the sending class", async () => {
+  it("confirms delivery when Telegram removes only the sending classes", async () => {
     const { button } = installTextSend("8", "fixture-text");
     const adapter = new TelegramSendAdapter();
     const observation = observeDom(document.documentElement, () => adapter.notifyDomChanged());
@@ -209,8 +209,45 @@ describe("TelegramSendAdapter", () => {
       );
       await Promise.resolve();
       adapter.notifyDomChanged();
-      (bubble as unknown as HTMLElement).classList.remove("sending");
+      (bubble as unknown as HTMLElement).classList.remove("is-outgoing", "is-sending");
       await expect(sending).resolves.toEqual({ status: "sent", messageId: "new-mid" });
+    } finally {
+      observation.disconnect();
+    }
+  });
+
+  it("does not confirm delivery on the temporary data-mid Telegram assigns before the server answers", async () => {
+    // generateTempMessageId hands out serverId + fraction, so a bubble carrying an id is not yet
+    // proof of delivery. Reporting that id would record a message that does not exist server-side.
+    const { button } = installTextSend("8", "fixture-text");
+    const adapter = new TelegramSendAdapter();
+    const observation = observeDom(document.documentElement, () => adapter.notifyDomChanged());
+    let bubble: HTMLElement | null = null;
+    button.addEventListener("click", () => {
+      bubble = appendOutgoing("8", "1001.0001", true);
+    });
+
+    try {
+      let settled = false;
+      const sending = adapter.sendPrepared(
+        { kind: "text", text: "fixture-text" },
+        "8",
+        new AbortController().signal,
+        vi.fn(),
+      ).then((result) => {
+        settled = true;
+        return result;
+      });
+      await Promise.resolve();
+      adapter.notifyDomChanged();
+      expect(settled).toBe(false);
+
+      const delivered = bubble as unknown as HTMLElement;
+      delivered.dataset.mid = "1002";
+      delivered.classList.remove("is-outgoing", "is-sending");
+      adapter.notifyDomChanged();
+
+      await expect(sending).resolves.toEqual({ status: "sent", messageId: "1002" });
     } finally {
       observation.disconnect();
     }
@@ -365,7 +402,7 @@ describe("TelegramSendAdapter", () => {
     );
 
     await vi.advanceTimersByTimeAsync(12_100);
-    (bubble as unknown as HTMLElement).classList.remove("sending");
+    (bubble as unknown as HTMLElement).classList.remove("is-outgoing", "is-sending");
     await vi.advanceTimersByTimeAsync(500);
 
     expect(await sending).toEqual({ status: "sent", messageId: "pending-mid" });
