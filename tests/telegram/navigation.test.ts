@@ -41,6 +41,23 @@ describe("TelegramChatNavigator", () => {
     return chat;
   }
 
+  /** Builds the outgoing bubble Web K renders, with the state classes it really uses. */
+  function appendOutgoing(
+    parent: ParentNode,
+    { messageId = "1001", classes = "", peerKey = "99" }: {
+      messageId?: string;
+      classes?: string;
+      peerKey?: string;
+    } = {},
+  ): HTMLElement {
+    const bubble = document.createElement("div");
+    bubble.className = `bubble is-out ${classes}`.trim();
+    bubble.dataset.peerId = peerKey;
+    bubble.dataset.mid = messageId;
+    parent.append(bubble);
+    return bubble;
+  }
+
   function appendVisibleDraft(composer: HTMLElement, label: string): void {
     const draft = document.createElement("div");
     draft.className = "reply-wrapper";
@@ -336,24 +353,96 @@ describe("TelegramChatNavigator", () => {
     });
   });
 
-  it("blocks navigation while Telegram is sending", async () => {
+  it("blocks navigation while a send started after Telegram opened the destination", async () => {
     vi.useFakeTimers();
     installDialogRow("99");
-    const composer = installComposer("99");
-    const sending = document.createElement("div");
-    sending.className = "sending";
-    composer.parentElement!.append(sending);
+    installComposer("99");
     const navigation = new TelegramChatNavigator(createLogger()).navigate(
       recipient,
       new AbortController().signal,
     );
+    // Appended after the navigator first observed the destination, so it belongs to this window.
+    appendOutgoing(document.body, { messageId: "1001.0001", classes: "is-outgoing is-sending" });
+
     await vi.advanceTimersByTimeAsync(5_000);
+
     const result = await navigation;
     expect(result.success).toBe(false);
     expect(result.message).toContain("ещё отправляет");
   });
 
-  it("restores the source despite sending markers in the chat being left and an inactive mounted chat", async () => {
+  it("still blocks on the legacy sending class of older Web K builds", async () => {
+    vi.useFakeTimers();
+    installDialogRow("99");
+    installComposer("99");
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+    );
+    const legacy = document.createElement("div");
+    legacy.className = "sending";
+    document.body.append(legacy);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(await navigation).toMatchObject({ success: false });
+  });
+
+  it("ignores an outgoing message that was already stuck before navigation started", async () => {
+    // A message left sending by an offline session never completes. Blocking on it would make
+    // the destination permanently unreachable instead of delaying it.
+    vi.useFakeTimers();
+    installDialogRow("99");
+    installComposer("99");
+    appendOutgoing(document.body, { messageId: "1001.0001", classes: "is-outgoing is-sending" });
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(await navigation).toMatchObject({ success: true });
+  });
+
+  it("ignores an outgoing message Telegram already rejected", async () => {
+    vi.useFakeTimers();
+    installDialogRow("99");
+    installComposer("99");
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+    );
+    appendOutgoing(document.body, {
+      messageId: "1001.0001",
+      classes: "is-outgoing is-sending is-error",
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(await navigation).toMatchObject({ success: true });
+  });
+
+  it("never blocks source restoration on a send that starts in the restored chat", async () => {
+    // Restoration sends nothing, and a failed restore is a safety failure of the whole batch.
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    row.addEventListener("mousedown", () => {
+      const chat = installProductionChat("99", "99");
+      appendOutgoing(chat, { messageId: "1001.0001", classes: "is-outgoing is-sending" });
+    });
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+      "source-restore",
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(await navigation).toMatchObject({ success: true });
+  });
+
+  it("restores the source despite in-flight sends in the chat being left and an inactive mounted chat", async () => {
     vi.useFakeTimers();
     const column = document.createElement("section");
     column.id = "column-center";
@@ -374,9 +463,11 @@ describe("TelegramChatNavigator", () => {
       owner.append(composer);
       chat.append(owner);
       if (sending) {
-        const marker = document.createElement("div");
-        marker.className = "sending";
-        chat.append(marker);
+        appendOutgoing(chat, {
+          peerKey,
+          messageId: `${peerKey}.0001`,
+          classes: "is-outgoing is-sending",
+        });
       }
       chats.append(chat);
       return chat;

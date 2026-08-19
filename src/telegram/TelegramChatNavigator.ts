@@ -8,6 +8,7 @@ import {
   hasIndependentActivePeerProof,
   type TelegramComposerContext,
 } from "./TelegramComposerDom";
+import { OutgoingInFlightBaseline } from "./outgoingMessageState";
 
 const ACTIVE_DIALOG_LIST_SELECTOR =
   ".tabs-tab.chatlist-parts.active ul.chatlist.virtual-chatlist";
@@ -18,7 +19,6 @@ const FORUM_MARKER_SELECTOR = ".is-forum";
 const NATIVE_FORWARD_POPUP_SELECTOR = ".popup.popup-forward.active";
 const MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
 const REPLY_OR_FORWARD_DRAFT_SELECTOR = ".reply-wrapper";
-const SENDING_SELECTOR = ".sending";
 const NAVIGATION_POLL_INTERVAL_MS = 50;
 const REQUIRED_STABLE_POLLS = 3;
 const DESTINATION_NAVIGATION_POLICY = {
@@ -83,6 +83,7 @@ interface NavigationWait {
   retryTimeoutId: number | null;
   pollTimeoutId: number | null;
   candidate: StableComposerCandidate | null;
+  inFlightBaseline: OutgoingInFlightBaseline | null;
   lastTransientBlocker: string | null;
   searchController: AbortController | null;
   searchOwned: boolean;
@@ -153,6 +154,7 @@ export class TelegramChatNavigator {
         retryTimeoutId: null,
         pollTimeoutId: null,
         candidate: null,
+        inFlightBaseline: null,
         lastTransientBlocker: null,
         searchController: null,
         searchOwned: false,
@@ -450,16 +452,32 @@ export class TelegramChatNavigator {
     return null;
   }
 
+  /**
+   * Delays the destination proof while a send this operation could collide with is running.
+   *
+   * The snapshot is taken on the first observation of the destination, as a deliberate side effect
+   * of this lookup: this is the only point that knows the proven chat scope. Without it the check
+   * would block on a send left over from an offline session, which never finishes.
+   */
   private findTransientBlocker(wait: NavigationWait): string | null {
+    // Restoring the source sends nothing, so outgoing traffic there is never a reason to hold it
+    // back. It is also the batch's safety boundary: a stuck message would block restoration
+    // forever and fail the whole batch over traffic that has nothing to do with it.
+    if (wait.intent === "source-restore") {
+      return null;
+    }
     const active = findActiveComposerContext();
-    // A `.sending` marker in the chat we are leaving (or in one of TWeb's inactive mounted
-    // chats) must never prevent the mandatory source restore from being initiated. Only a
-    // marker owned by the already-active intended peer can delay its final stable proof.
+    // Traffic in the chat being left, or in one of TWeb's inactive mounted chats, says nothing
+    // about the chat being proven. Only the already-active intended peer can delay its proof.
     if (!active || active.peerId !== wait.recipient.peerKey) {
       return null;
     }
     const scope: ParentNode = active.chat ?? active.container.closest(".chat") ?? document;
-    return scope.querySelector(SENDING_SELECTOR)
+    if (!wait.inFlightBaseline) {
+      wait.inFlightBaseline = new OutgoingInFlightBaseline(scope);
+      return null;
+    }
+    return wait.inFlightBaseline.findNew(scope).length > 0
       ? "Telegram ещё отправляет другое сообщение. Дождитесь завершения и повторите попытку."
       : null;
   }
