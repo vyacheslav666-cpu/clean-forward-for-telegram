@@ -23,7 +23,9 @@
 - `OutgoingInFlightBaseline` и `findOutgoingInFlight()` в `src/telegram/outgoingMessageState.ts`:
   снимок уже идущих отправок и поиск незавершённых по области DOM. Отклонённая отправка (`is-error`)
   в результат не попадает — Telegram её уже остановил, ждать нечего;
-- `tests/telegram/outgoing-message-state.test.ts` и новые сценарии в `navigation.test.ts`:
+- `tests/telegram/outgoing-message-state.test.ts`, сценарии очистки preview в `composer.test.ts`
+  (закрытие preview начало отправку в чате получателя — отказ; отправка, шедшая до закрытия, —
+  не в счёт) и новые сценарии в `navigation.test.ts`:
   зависшее сообщение не блокирует, отправка после снимка блокирует, отклонённая игнорируется,
   восстановление источника не блокируется, временный id переживает перерисовку бабла.
 
