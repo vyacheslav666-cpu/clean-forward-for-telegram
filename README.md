@@ -26,7 +26,7 @@
 |---|---|---|---|
 | Plain text | DOM fallback или verified Telegram model | Text composer + native Send | Поддерживается end-to-end; политика link preview — только `regenerate` |
 | Photo | Полные bytes, имя и MIME | `Photo or Video` preview + native confirm | Поддерживается; только plain caption без entities |
-| Video | DOM capture полных bytes + размеры/длительность из `<video>` | `Photo or Video` preview + native confirm | Поддерживается: одно обычное видео, опционально с plain caption. Требуется загруженная браузером metadata; Telegram перекодирует видео при загрузке |
+| Video | DOM capture полных bytes + размеры/длительность из `<video>` | `Photo or Video` preview + native confirm | Поддерживается: одно обычное видео, опционально с plain caption. Требуется загруженная браузером metadata и свободное место в хранилище origin; Telegram перекодирует видео при загрузке |
 | GIF/animation | Verified model + полные bytes/metadata | `Photo or Video` preview + native confirm | **Не поддерживается production capture:** strategy test-only; Telegram также может транскодировать media |
 | Document | Verified model + полные bytes/имя/MIME | `Document` preview + native confirm | **Не поддерживается production capture:** strategy test-only; thumbnail не считается содержимым файла |
 | Audio/music | Verified model + полные bytes/metadata | `Document` preview + native confirm | **Не поддерживается production capture:** strategy test-only; voice message не преобразуется в audio file |
@@ -57,6 +57,8 @@
   временный дробный mid либо классы `is-outgoing`/`is-sending`, отправка не завершена. Именно это
   сохраняет порядок bundle — следующий item не уходит, пока предыдущий ещё загружается. Закрытие
   preview и очистка composer успехом не считаются;
+- захват медиа не тратит хранилище Telegram сверх необходимого: требуемое место проверяется до
+  чтения, а чанки, которые захват заставил service worker сохранить, удаляются после него;
 - album подтверждается только полным ожидаемым набором новых grouped `data-mid`;
 - automatic retry ограничен и разрешён только до Send;
 - после Send повтор item/group запрещён; неоднозначность становится `unknown` и останавливает batch;
@@ -92,7 +94,8 @@ Recipient status вычисляется из вложенных item/group state
 - production bootstrap пока не предоставляет verified read-only Telegram model bridge; document/audio/album strategies не являются production support;
 - video captured из DOM: поддерживается ровно одно обычное видео в сообщении, без photo рядом и вне album. Video note (кружок) и GIF/animation намеренно не считаются video, потому что повторная отправка через media path изменила бы смысл сообщения;
 - байты видео собираются полностью до отправки. Telegram отдаёт их своим service worker по частям, поэтому неизвестный общий размер или обрыв передачи отклоняются: усечённый файл остаётся воспроизводимым видео и молча заменил бы оригинал;
-- capture видео начинается только после того, как браузер сообщил его реальные размеры и длительность. До этого сообщение отклоняется, а не отправляется одной подписью.
+- capture видео начинается только после того, как браузер сообщил его реальные размеры и длительность. До этого сообщение отклоняется, а не отправляется одной подписью;
+- чтение видео идёт через service worker Web K, а тот сохраняет **каждый** выданный чанк в CacheStorage `cachedStreamChunks` и дополнительно читает 20 МБ вперёд. Это тот же origin, где Telegram держит собственную сессию и state, поэтому цена копии ложится на Telegram. Захват отклоняется до чтения, если копия не помещается в свободное место, а вызванные им чанки удаляются после захвата. Браузер, не сообщающий `navigator.storage.estimate()`, захват не блокирует: иначе копирование было бы невозможно там, где оценки нет.
 
 ## Установка
 
@@ -109,8 +112,8 @@ npm run validate
 
 После новой сборки нужно повторно заменить код в Tampermonkey: уже установленная
 копия не синхронизируется с локальным `dist` автоматически. Текущий релиз —
-`0.1.9`; версия показывается не только в userscript header, но и в заголовках
-picker/progress UI. Если там нет `v0.1.9`, новый runtime не запущен.
+`0.1.10`; версия показывается не только в userscript header, но и в заголовках
+picker/progress UI. Если там нет `v0.1.10`, новый runtime не запущен.
 
 Сборка содержит header с `@match https://web.telegram.org/k/*`.
 
@@ -155,6 +158,8 @@ Payload и binary Blob живут только в памяти. `localStorage`, 
 - photo и photo + caption; document/audio — только после подключения verified production model bridge;
 - одно видео и видео + caption, включая большое видео, которое Telegram отдаёт частями;
 - видео, у которого ещё не загрузилась metadata, и видео-кружок: оба должны быть отклонены до recipient picker;
+- видео при почти заполненном хранилище origin: захват должен быть отклонён до recipient picker с явной причиной, а Telegram — остаться работоспособным;
+- после успешного захвата видео в CacheStorage `cachedStreamChunks` не остаётся чанков, вызванных этим захватом;
 - compatible photo/video album — только после подключения model bridge: один native Send и полный grouped result;
 - пользовательский draft в destination до success, pre-Send failure и Cancel;
 - recipient/composer/upload-preview rerender;
