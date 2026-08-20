@@ -5,6 +5,7 @@ import type { RecipientSourceAdapter } from "../recipient/RecipientSourceAdapter
 import type { Logger } from "../utils/logger";
 import {
   findActiveComposerContext,
+  findActiveReadOnlyPeerContext,
   hasIndependentActivePeerProof,
   type TelegramComposerContext,
 } from "./TelegramComposerDom";
@@ -342,24 +343,28 @@ export class TelegramChatNavigator {
     }
 
     wait.state = "prove-exact-peer";
-    const composer = findActiveComposerContext();
-    if (!composer || composer.peerId !== wait.recipient.peerKey) {
-      wait.candidate = null;
-      return;
+    const active = findActiveComposerContext();
+    const composer = active?.peerId === wait.recipient.peerKey ? active : null;
+    if (composer) {
+      wait.state = "prove-composer-ownership";
+      if (!this.isActiveComposerDom(composer)) {
+        wait.candidate = null;
+        return;
+      }
+      const invalid = this.inspectComposer(composer);
+      if (invalid) {
+        wait.finish({ success: false, message: invalid });
+        return;
+      }
     }
-    wait.state = "prove-composer-ownership";
-    if (!this.isActiveComposerDom(composer)) {
+    const proof = composer ?? this.findReadOnlyPeerProof(wait);
+    if (!proof) {
       wait.candidate = null;
-      return;
-    }
-    const invalid = this.inspectComposer(composer);
-    if (invalid) {
-      wait.finish({ success: false, message: invalid });
       return;
     }
     if (
       wait.intent === "source-restore" &&
-      !hasIndependentActivePeerProof(composer, wait.recipient.peerKey)
+      !hasIndependentActivePeerProof(proof, wait.recipient.peerKey)
     ) {
       // During TWeb transitions a stale composer can briefly keep the requested data-peer-id
       // while another chat already owns the visible topbar. Never turn that transient state into
@@ -372,12 +377,12 @@ export class TelegramChatNavigator {
     wait.state = "stabilize";
     const candidate = wait.candidate;
     const sameCandidate =
-      candidate?.composer === composer.composer &&
-      candidate.container === composer.container &&
-      candidate.chat === composer.chat &&
-      candidate.peerId === composer.peerId;
+      candidate?.composer === proof.composer &&
+      candidate.container === proof.container &&
+      candidate.chat === proof.chat &&
+      candidate.peerId === proof.peerId;
     if (!sameCandidate) {
-      wait.candidate = { ...composer, stablePolls: 0 };
+      wait.candidate = { ...proof, stablePolls: 0 };
       return;
     }
     if (!stablePoll) {
@@ -423,6 +428,26 @@ export class TelegramChatNavigator {
     wait.releasingSearch = false;
     wait.candidate = null;
     this.checkExpectedPeer(wait, false);
+  }
+
+  /**
+   * Accepts a chat that is open but has no writable composer — only when restoring the source.
+   *
+   * A broadcast channel is the main source of this tool, and Web K renders an Unmute control there
+   * instead of an input, so the composer proof was unreachable in principle: every delivery from a
+   * channel ended in a safety stop that claimed the chat had not opened while it demonstrably had.
+   *
+   * The relaxation is deliberately one-directional. A destination is written into — draft
+   * transaction, text insertion, native Send — so a chat with no writable composer must keep
+   * failing here, where the reason is still clear, rather than three steps later. Nothing is
+   * written into the source, and its only question is whether the user is back where they started.
+   */
+  private findReadOnlyPeerProof(wait: NavigationWait): TelegramComposerContext | null {
+    if (wait.intent !== "source-restore") {
+      return null;
+    }
+    const context = findActiveReadOnlyPeerContext();
+    return context?.peerId === wait.recipient.peerKey ? context : null;
   }
 
   private inspectComposer(context: TelegramComposerContext): string | null {

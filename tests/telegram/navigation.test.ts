@@ -8,9 +8,15 @@ import { createLogger, installComposer, installDialogRow } from "../helpers";
 const recipient: Recipient = { peerKey: "99", title: "Target", supported: true };
 
 describe("TelegramChatNavigator", () => {
+  /**
+   * @param readOnly Renders the chat the way Web K renders a broadcast channel: the input node is
+   * still there and still bound to the peer, but `finishPeerChange` left it non-editable because
+   * the user cannot post. This is the shape in which a channel source is restored.
+   */
   function installProductionChat(
     composerPeerKey: string,
     avatarPeerKey?: string,
+    { readOnly = false }: { readOnly?: boolean } = {},
   ): HTMLElement {
     const column = document.createElement("section");
     column.id = "column-center";
@@ -31,7 +37,7 @@ describe("TelegramChatNavigator", () => {
     owner.className = "chat-input chat-input-main";
     const composer = document.createElement("div");
     composer.className = "input-message-input";
-    composer.setAttribute("contenteditable", "true");
+    composer.setAttribute("contenteditable", readOnly ? "false" : "true");
     composer.dataset.peerId = composerPeerKey;
     owner.append(composer);
     chat.append(owner);
@@ -477,6 +483,81 @@ describe("TelegramChatNavigator", () => {
     await expect(navigation).resolves.toMatchObject({ success: true });
     expect(mousedown).toHaveBeenCalledOnce();
     expect(sourceChat.classList.contains("active")).toBe(true);
+  });
+
+  /**
+   * The live failure this covers: every delivery from a channel ended in a red safety stop while
+   * the channel was demonstrably open, because a broadcast peer has no writable composer at all.
+   */
+  it("restores a source channel that renders no writable composer", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    row.addEventListener("mousedown", () => {
+      row.classList.add("active");
+      installProductionChat("99", "99", { readOnly: true });
+    });
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+      "source-restore",
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(navigation).resolves.toMatchObject({ success: true });
+    expect(document.querySelector('.input-message-input[contenteditable="true"]')).toBeNull();
+  });
+
+  /**
+   * The dangerous half of the same relaxation: a chat caught mid-transition still carries the
+   * previous peer on that node, and a non-editable input must never turn that into a success.
+   */
+  it("keeps refusing restoration while a read-only chat still shows the previous peer", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    row.addEventListener("mousedown", () => installProductionChat("100", "100", { readOnly: true }));
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+      "source-restore",
+    );
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    await expect(navigation).resolves.toMatchObject({ success: false });
+  });
+
+  it("still requires the independent peer proof when the source is read-only", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    row.addEventListener("mousedown", () => installProductionChat("99", "100", { readOnly: true }));
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+      "source-restore",
+    );
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    await expect(navigation).resolves.toMatchObject({ success: false });
+  });
+
+  /** A destination is written into, so a chat without a writable composer must fail here. */
+  it("never accepts a read-only chat as a delivery destination", async () => {
+    vi.useFakeTimers();
+    const row = installDialogRow("99");
+    row.addEventListener("mousedown", () => {
+      row.classList.add("active");
+      installProductionChat("99", "99", { readOnly: true });
+    });
+
+    const navigation = new TelegramChatNavigator(createLogger()).navigate(
+      recipient,
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    await expect(navigation).resolves.toMatchObject({ success: false });
   });
 
   it("does not report source restore success when the same-chat topbar proves another peer", async () => {

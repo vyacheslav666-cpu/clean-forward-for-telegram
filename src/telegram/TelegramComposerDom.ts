@@ -10,6 +10,7 @@ import {
   HIDDEN_CLASSES,
   MAIN_CHATS_SELECTOR,
   OWNED_COMPOSER_CONTAINER_SELECTOR,
+  READ_ONLY_COMPOSER_SELECTOR,
   TOPBAR_PEER_IDENTITY_SELECTOR,
 } from "./domContract";
 
@@ -97,6 +98,50 @@ export function findActiveComposerContext(
 /** Confirms that Telegram still points at the peer captured before an async operation. */
 export function isActivePeer(peerId: string): boolean {
   return findActiveComposerContext()?.peerId === peerId;
+}
+
+/**
+ * Resolves the open peer of a chat that legitimately has no writable composer.
+ *
+ * A broadcast channel is the normal source of this project's main scenario, and Web K shows an
+ * Unmute/Join control there instead of an input. The identity is still published, on the same
+ * node: `ChatInput.finishPeerChange` writes `dataset.peerId` after it has marked the input
+ * non-editable, so a peer id read here means Web K finished switching this chat to that peer.
+ * A chat caught mid-transition still carries the previous peer id and is therefore rejected —
+ * which is the only reason a lookup this weak can be allowed to prove anything at all.
+ *
+ * Element-level visibility is deliberately not required: hiding this input is exactly what Web K
+ * does for a read-only peer. Chat-level hiding still disqualifies it, as does anything but one
+ * active main chat owning exactly one container and one input. The production shell is required;
+ * an isolated fixture without it gets no proof rather than a cheaper one.
+ */
+export function findActiveReadOnlyPeerContext(): TelegramComposerContext | null {
+  const mainChats = document.querySelector<HTMLElement>(MAIN_CHATS_SELECTOR);
+  const activeChats = mainChats?.querySelectorAll<HTMLElement>(ACTIVE_MAIN_CHAT_SELECTOR);
+  if (!activeChats || activeChats.length !== 1) {
+    return null;
+  }
+  const chat = activeChats.item(0);
+  if (!chat.isConnected || chat.closest(HIDDEN_CHAT_ANCESTOR_SELECTOR)) {
+    return null;
+  }
+
+  const containers = chat.querySelectorAll<HTMLElement>(OWNED_COMPOSER_CONTAINER_SELECTOR);
+  if (containers.length !== 1) {
+    return null;
+  }
+  const container = containers.item(0);
+  const composers = container.querySelectorAll<HTMLElement>(READ_ONLY_COMPOSER_SELECTOR);
+  if (composers.length !== 1) {
+    return null;
+  }
+
+  const composer = composers.item(0);
+  const peerId = composer.dataset.peerId?.trim() ?? "";
+  if (!peerId || composer.closest(CHAT_SELECTOR) !== chat) {
+    return null;
+  }
+  return { composer, container, chat, peerId };
 }
 
 /**

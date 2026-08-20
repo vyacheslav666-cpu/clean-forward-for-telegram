@@ -69,6 +69,22 @@ export const CHAT_SELECTOR = ".chat";
 export const ACTIVE_COMPOSER_SELECTOR =
   '.input-message-input[contenteditable="true"][data-peer-id]';
 export const COMPOSER_SELECTOR = ".input-message-input[data-peer-id]";
+/**
+ * The same composer node in a chat the user is not allowed to write in.
+ *
+ * Web K builds the message input for every chat (`ChatInput.constructPeerHelpers` always calls
+ * `attachMessageInputField`) and keeps binding it to the open peer. At the end of
+ * `ChatInput.finishPeerChange` it sets `contentEditable = 'false'` when the peer cannot be posted
+ * to, and only then writes `messageInput.dataset.peerId` (`components/chat/input.ts`). A broadcast
+ * channel therefore still publishes which peer is open — it just publishes it on a node the strict
+ * `[contenteditable="true"]` form can never match, which is why an open channel could not be
+ * proven at all.
+ *
+ * Being read-only is not what this selector proves; the identity is. The negated attribute keeps
+ * this lookup from silently standing in for the writable one.
+ */
+export const READ_ONLY_COMPOSER_SELECTOR =
+  '.input-message-input[data-peer-id]:not([contenteditable="true"])';
 export const TOPBAR_PEER_IDENTITY_SELECTOR = ".topbar .person-avatar[data-peer-id]";
 export const ACTIVE_CHAT_TITLE_SELECTOR = ".topbar .peer-title, .topbar .user-title";
 export const HIDDEN_ANCESTOR_SELECTOR = '[hidden], [aria-hidden="true"]';
