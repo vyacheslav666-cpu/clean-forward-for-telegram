@@ -46,12 +46,6 @@ describe("outgoingMessageState", () => {
     expect(isOutgoingAcknowledged(bubble)).toBe(false);
   });
 
-  it("still recognizes the legacy sending class of older Web K builds", () => {
-    const bubble = appendBubble("sending", "1004");
-    expect(isOutgoingInFlight(bubble)).toBe(true);
-    expect(isOutgoingAcknowledged(bubble)).toBe(false);
-  });
-
   it("resolves grouped album items through the bubble that owns their state", () => {
     const bubble = appendBubble("is-outgoing is-sending");
     const item = document.createElement("div");

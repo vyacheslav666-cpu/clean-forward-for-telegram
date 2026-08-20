@@ -16,9 +16,8 @@ import {
   CAPTION_CONFIRM_SELECTOR as PHOTO_SEND_BUTTON_SELECTOR,
   CAPTION_EDITOR_SELECTOR,
   CONFIRMED_OUTGOING_SELECTOR,
-  MESSAGE_LAYOUT_FIX_SELECTOR,
+  MESSAGE_TEXT_IGNORED_SELECTORS,
   MESSAGE_TEXT_SELECTOR,
-  MESSAGE_TIME_SELECTOR,
   OUTGOING_BUBBLE_SELECTOR,
   PREVIEW_ALBUM_SELECTOR,
   PREVIEW_DOCUMENT_ITEM_SELECTOR,
@@ -27,7 +26,6 @@ import {
   REPLY_OR_FORWARD_DRAFT_SELECTOR,
   TEXT_SEND_BUTTON_SELECTOR,
 } from "./domContract";
-
 
 /** Confirmed or fail-closed outcome of exactly one native Send attempt. */
 export type TelegramSendResult =
@@ -426,7 +424,7 @@ export class TelegramSendAdapter {
       return false;
     }
     const observed = readTelegramText(message, {
-      ignoredSelectors: [MESSAGE_TIME_SELECTOR, MESSAGE_LAYOUT_FIX_SELECTOR],
+      ignoredSelectors: MESSAGE_TEXT_IGNORED_SELECTORS,
     });
     return normalizeText(observed).trim() === normalizeText(payload.text).trim();
   }

@@ -91,6 +91,50 @@ export const MESSAGE_IDENTITY_SELECTOR = `${GROUPED_ITEM_SELECTOR}, ${MESSAGE_RO
 export const MESSAGE_TEXT_SELECTOR = ".message";
 export const MESSAGE_TIME_SELECTOR = ".time";
 export const MESSAGE_LAYOUT_FIX_SELECTOR = ".clearfix";
+/**
+ * Web K's reactions panel, matched by class rather than by its `reactions-element` tag name.
+ *
+ * Both name the same node, but only one of them is checkable: the tag is composed at runtime
+ * (`const CLASS_NAME = 'reactions'; const TAG_NAME = CLASS_NAME + '-element'` in
+ * `components/chat/reactions.ts`), so no literal to compare against upstream exists, while the
+ * class is that plain constant. The class is also the safer read: the element adds it in its
+ * constructor, so it is present from the moment the node exists, and it is the same token upstream
+ * itself skips when it looks for message text.
+ */
+export const MESSAGE_REACTIONS_SELECTOR = ".reactions";
+/** Quoted message shown above a reply, and the story reply Web K puts inside `.message`. */
+export const MESSAGE_REPLY_SELECTOR = ".reply";
+/** Language label and copy button Web K renders above a code block. */
+export const MESSAGE_CODE_HEADER_SELECTOR = ".code-header";
+/** Link preview box. Its title and description are generated from the URL, never typed by anyone. */
+export const MESSAGE_WEBPAGE_SELECTOR = ".webpage";
+/** Telegram's own fact-check annotation, attached to a message rather than written in it. */
+export const MESSAGE_FACT_CHECK_SELECTOR = ".bubble-fact-check";
+/**
+ * Everything inside `.message` that is not the message text.
+ *
+ * Web K keeps its own answer to exactly this question, and this list is taken from there rather
+ * than invented: `BUBBLE_TEXT_HIGHLIGHT_SKIP` in `components/chat/bubbles.ts` is
+ * `'.time, .reactions, .reply, .code-header, .webpage'`, introduced by the comment "parts of
+ * `.message` that are not the message text (link preview / fact-check boxes included)".
+ *
+ * Two entries are ours. `.clearfix` is the empty layout filler appended next to the timestamp
+ * (`messageDiv.append(timeSpan, clearfix())`) — upstream never lists it because it holds no text
+ * to highlight. `.bubble-fact-check` is the box upstream's comment names but its selector omits.
+ *
+ * The set is shared on purpose. Capture reads the source text with it and delivery confirmation
+ * re-reads the sent bubble with it; had the two lists drifted apart, a message would have been
+ * captured under one definition of "the text" and then verified against another.
+ */
+export const MESSAGE_TEXT_IGNORED_SELECTORS = [
+  MESSAGE_TIME_SELECTOR,
+  MESSAGE_LAYOUT_FIX_SELECTOR,
+  MESSAGE_REACTIONS_SELECTOR,
+  MESSAGE_REPLY_SELECTOR,
+  MESSAGE_CODE_HEADER_SELECTOR,
+  MESSAGE_WEBPAGE_SELECTOR,
+  MESSAGE_FACT_CHECK_SELECTOR,
+] as const;
 export const MESSAGE_PHOTO_SELECTOR = "img.media-photo";
 /**
  * Web K tags every playable bubble video with this class, then wraps round notes in `.media-round`
@@ -110,11 +154,14 @@ export const OUTGOING_BUBBLE_SELECTOR = ".bubble.is-out";
 export const CONFIRMED_OUTGOING_SELECTOR =
   ".bubble.is-out[data-mid][data-peer-id], .bubble.is-out .grouped-item[data-mid]";
 /**
- * `is-outgoing` plus the `is-sending` status class mark a message still in flight. `sending` is
- * kept only for older builds; current Web K never sets it. See `outgoingMessageState.ts` for why
- * both the class and the temporary `data-mid` are checked.
+ * `is-outgoing` plus the `is-sending` status class mark a message still in flight.
+ *
+ * A third member, `.sending`, was dropped: no `classList` call in upstream ever sets it, so it
+ * could only ever widen the selector with a name nothing carries. The `sending` that does exist
+ * upstream is an icon name (`sendingStatus.ts`), not a bubble class. See
+ * `outgoingMessageState.ts` for why both the class and the temporary `data-mid` are checked.
  */
-export const IN_FLIGHT_SELECTOR = ".is-outgoing, .is-sending, .sending";
+export const IN_FLIGHT_SELECTOR = ".is-outgoing, .is-sending";
 export const FAILED_SELECTOR = ".is-error";
 
 /* ------------------------------------------------------------------ *
@@ -169,8 +216,13 @@ export const MENU_ITEM_TEXT_CLASS = "btn-menu-item-text";
 
 export const FILE_INPUT_SELECTOR = '.new-message-wrapper input[type="file"]';
 /**
- * The attach control is Web K's `attach-menu-button` custom element. The `attach-file` class it
- * used to carry has been dropped, so matching the element itself keeps both builds working.
+ * The attach control is Web K's `attach-menu-button` custom element
+ * (`attachMenuButton.tsx`), and the element name is what this matches.
+ *
+ * An earlier comment here claimed the `attach-file` class had been dropped upstream and used that
+ * to justify the change. It had not: `input.ts` still adds it. The selector is right for a
+ * different reason — a registered custom-element name is the control's own identity, while
+ * `attach-file` is a class applied to the menu it opens.
  */
 export const ATTACHMENT_BUTTON_SELECTOR = "attach-menu-button";
 export const TEXT_SEND_BUTTON_SELECTOR = ".btn-send";
@@ -186,8 +238,15 @@ export const CAPTION_CONFIRM_SELECTOR = ".simple-message-input-confirm";
 export const PREVIEW_CLOSE_SELECTOR = ".popup-close";
 export const UNSTABLE_EDITOR_SELECTOR = ".animating, .is-changing-height";
 /**
- * `.render-progress` no longer exists upstream — `RenderProgressCircle` renders an inline-styled
- * div with no class — so preview readiness currently rests on `.preloader` alone.
+ * The spinner Web K shows while preview media is still rendering.
+ *
+ * Both previous halves were dead. `.render-progress` never existed: `RenderProgressCircle`
+ * renders an inline-styled div carrying neither class nor attribute, so conversion progress cannot
+ * be observed at all. `.preloader` exists (`putPreloader.ts:13`) but the preview never calls
+ * `putPreloader` — its spinner is a `ProgressivePreloader`, which tags its container
+ * `preloader-container` (`preloader.ts:59`). With neither half matching, a preview counted as
+ * ready the moment a caption and an enabled confirm button appeared, before the media had
+ * rendered.
  */
-export const UNREADY_MEDIA_SELECTOR = ".preloader, .render-progress";
+export const UNREADY_MEDIA_SELECTOR = ".preloader-container";
 export const REPLY_OR_FORWARD_DRAFT_SELECTOR = ".reply-wrapper";

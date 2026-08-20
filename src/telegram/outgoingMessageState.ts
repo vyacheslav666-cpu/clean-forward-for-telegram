@@ -25,7 +25,7 @@ import {
  * the fractional `data-mid` Web K hands out before the server answers. It only narrows which nodes
  * a scan has to inspect; the decision itself still belongs to {@link isOutgoingInFlight}.
  */
-const IN_FLIGHT_MARKER_SELECTOR = '.is-outgoing, .is-sending, .sending, [data-mid*="."]';
+const IN_FLIGHT_MARKER_SELECTOR = '.is-outgoing, .is-sending, [data-mid*="."]';
 
 /**
  * Reports whether Telegram has accepted this outgoing element and given it a server identity.

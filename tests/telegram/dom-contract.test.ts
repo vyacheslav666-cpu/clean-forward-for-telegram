@@ -28,6 +28,31 @@ const sources = import.meta.glob("../../src/telegram/**/*.ts", {
   import: "default",
   eager: true,
 }) as Record<string, string>;
+
+/**
+ * Wider corpus for the "is this token still used" direction.
+ *
+ * A token earns its place in the contract by being used anywhere in the project, not only by the
+ * Telegram adapters: `night` is read from `src/ui` to theme this project's own overlays.
+ */
+const projectSources = import.meta.glob("../../src/**/*.ts", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
+
+/**
+ * The DOM property form of a `data-*` attribute.
+ *
+ * `data-monoforum-parent-peer-id` is read as `dataset.monoforumParentPeerId`, so searching for the
+ * attribute name literally finds nothing even though the code depends on it.
+ */
+function datasetProperty(token: string): string | null {
+  if (!token.startsWith("data-")) return null;
+  return token
+    .slice("data-".length)
+    .replace(/-([a-z0-9])/g, (_, character: string) => character.toUpperCase());
+}
 const normalizePath = (path: string): string => path.replace(/^(\.\.\/)+/, "");
 
 /** Attributes and shapes owned by HTML itself, never by Telegram. */
@@ -138,10 +163,16 @@ describe("Telegram DOM contract", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps no token that nothing in src/telegram uses", () => {
-    const corpus = Object.values(sources).join("\n");
+  it("keeps no token that nothing in the project uses", () => {
+    const corpus = Object.values(projectSources).join("\n");
+    const isUsed = (entry: ContractToken): boolean => {
+      if (new RegExp(`(?<![\w-])${entry.token}(?![\w-])`).test(corpus)) return true;
+      // An attribute the code reads through `dataset` never appears under its own name.
+      const property = datasetProperty(entry.token);
+      return property !== null && new RegExp(`dataset\.${property}(?![\w])`).test(corpus);
+    };
     const unused = contract.tokens
-      .filter((entry) => !new RegExp(`(?<![\\w-])${entry.token}(?![\\w-])`).test(corpus))
+      .filter((entry) => !isUsed(entry))
       .map((entry) => `${entry.kind} "${entry.token}"`);
     expect(unused).toEqual([]);
   });

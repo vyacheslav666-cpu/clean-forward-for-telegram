@@ -34,11 +34,10 @@ import {
   MENU_OVERLAY_SELECTOR,
   MESSAGE_ATTACHMENT_SELECTOR,
   MESSAGE_IDENTITY_SELECTOR,
-  MESSAGE_LAYOUT_FIX_SELECTOR,
   MESSAGE_PHOTO_SELECTOR,
   MESSAGE_ROOT_SELECTOR,
+  MESSAGE_TEXT_IGNORED_SELECTORS,
   MESSAGE_TEXT_SELECTOR,
-  MESSAGE_TIME_SELECTOR,
   MESSAGE_VIDEO_SELECTOR,
   NATIVE_SEARCH_INPUT_SELECTOR,
   PEER_TITLE_SELECTOR,
@@ -261,7 +260,7 @@ export class TelegramDomAdapter {
       group: grouped ? { kind: "ambiguous-dom" } : { kind: "none" },
       text: textElement
         ? readTelegramText(textElement, {
-            ignoredSelectors: [MESSAGE_TIME_SELECTOR, MESSAGE_LAYOUT_FIX_SELECTOR],
+            ignoredSelectors: MESSAGE_TEXT_IGNORED_SELECTORS,
           }).trim() || null
         : null,
       imageUrl: photos[0]?.currentSrc || photos[0]?.src || null,

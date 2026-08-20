@@ -74,6 +74,17 @@
     { "token": "message", "kind": "class", "status": "required", "area": "message" },
     { "token": "time", "kind": "class", "status": "required", "area": "message" },
     { "token": "clearfix", "kind": "class", "status": "required", "area": "message" },
+    {
+      "token": "reactions",
+      "kind": "class",
+      "status": "required",
+      "area": "message",
+      "note": "Reactions panel Web K appends inside .message (bubbles.ts messageDiv.append(reactionsElement)). Matched by class, not by the reactions-element tag: the tag name is composed at runtime as CLASS_NAME + '-element' (components/chat/reactions.ts), while this class is that plain constant and is added in the element's constructor."
+    },
+    { "token": "reply", "kind": "class", "status": "required", "area": "message" },
+    { "token": "code-header", "kind": "class", "status": "required", "area": "message" },
+    { "token": "webpage", "kind": "class", "status": "required", "area": "message" },
+    { "token": "bubble-fact-check", "kind": "class", "status": "required", "area": "message" },
     { "token": "media-photo", "kind": "class", "status": "required", "area": "message" },
     { "token": "media-video", "kind": "class", "status": "required", "area": "message" },
     { "token": "media-round", "kind": "class", "status": "required", "area": "message" },
@@ -83,13 +94,6 @@
     { "token": "is-outgoing", "kind": "class", "status": "required", "area": "message" },
     { "token": "is-sending", "kind": "class", "status": "required", "area": "message" },
     { "token": "is-error", "kind": "class", "status": "required", "area": "message" },
-    {
-      "token": "sending",
-      "kind": "class",
-      "status": "legacy",
-      "area": "message",
-      "note": "Pre-rename in-flight marker. Current Web K never sets it; kept only so older builds still block confirmation."
-    },
 
     { "token": "chat-input-wrapper", "kind": "class", "status": "required", "area": "selection" },
     { "token": "selection-wrapper", "kind": "class", "status": "required", "area": "selection" },
@@ -146,13 +150,12 @@
     { "token": "input-field-input-fake", "kind": "class", "status": "required", "area": "preview" },
     { "token": "animating", "kind": "class", "status": "required", "area": "preview" },
     { "token": "is-changing-height", "kind": "class", "status": "required", "area": "preview" },
-    { "token": "preloader", "kind": "class", "status": "required", "area": "preview" },
     {
-      "token": "render-progress",
+      "token": "preloader-container",
       "kind": "class",
-      "status": "legacy",
+      "status": "required",
       "area": "preview",
-      "note": "Absent from current Web K: RenderProgressCircle renders an inline-styled div with no class, so this half of UNREADY_MEDIA_SELECTOR matches nothing and readiness rests on .preloader alone."
+      "note": "ProgressivePreloader's container. The only observable sign that preview media is still rendering: the preview never calls putPreloader, and RenderProgressCircle carries neither class nor attribute, so conversion progress cannot be watched at all."
     },
 
     {
@@ -160,10 +163,45 @@
       "kind": "element",
       "status": "required",
       "area": "chat",
-      "note": "Custom element that replaced the dropped .attach-file class."
+      "note": "The attach control's own custom-element name. The .attach-file class still exists upstream; it sits on the menu this button opens, which is why the element name is what we match."
     },
 
     { "token": "data-peer-id", "kind": "attribute", "status": "required", "area": "shared" },
-    { "token": "data-mid", "kind": "attribute", "status": "required", "area": "message" }
+    { "token": "data-mid", "kind": "attribute", "status": "required", "area": "message" },
+    {
+      "token": "data-sponsored",
+      "kind": "attribute",
+      "status": "required",
+      "area": "sidebar",
+      "note": "Marks a sponsored dialog row; read as dataset.sponsored, so no selector mentions it."
+    },
+    {
+      "token": "data-thread-id",
+      "kind": "attribute",
+      "status": "required",
+      "area": "sidebar",
+      "note": "Forum topic row; read with hasAttribute, so no selector mentions it."
+    },
+    {
+      "token": "data-monoforum-parent-peer-id",
+      "kind": "attribute",
+      "status": "required",
+      "area": "sidebar",
+      "note": "Monoforum sub-row; read with hasAttribute, so no selector mentions it."
+    },
+    {
+      "token": "data-timestamp",
+      "kind": "attribute",
+      "status": "required",
+      "area": "message",
+      "note": "Message send time; read as dataset.timestamp, so no selector mentions it."
+    },
+    {
+      "token": "night",
+      "kind": "class",
+      "status": "required",
+      "area": "shared",
+      "note": "Web K's dark-theme flag on <html>; read from src/ui to theme this project's own overlays."
+    }
   ]
 }

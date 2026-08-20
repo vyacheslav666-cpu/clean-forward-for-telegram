@@ -371,23 +371,6 @@ describe("TelegramChatNavigator", () => {
     expect(result.message).toContain("ещё отправляет");
   });
 
-  it("still blocks on the legacy sending class of older Web K builds", async () => {
-    vi.useFakeTimers();
-    installDialogRow("99");
-    installComposer("99");
-    const navigation = new TelegramChatNavigator(createLogger()).navigate(
-      recipient,
-      new AbortController().signal,
-    );
-    const legacy = document.createElement("div");
-    legacy.className = "sending";
-    document.body.append(legacy);
-
-    await vi.advanceTimersByTimeAsync(5_000);
-
-    expect(await navigation).toMatchObject({ success: false });
-  });
-
   it("ignores an outgoing message that was already stuck before navigation started", async () => {
     // A message left sending by an offline session never completes. Blocking on it would make
     // the destination permanently unreachable instead of delaying it.
