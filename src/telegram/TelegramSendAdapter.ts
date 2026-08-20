@@ -11,24 +11,23 @@ import {
   isOutgoingRejected,
 } from "./outgoingMessageState";
 import { readTelegramText } from "./readTelegramText";
+import {
+  ACTIVE_MEDIA_PREVIEW_SELECTOR as ACTIVE_PREVIEW_SELECTOR,
+  CAPTION_CONFIRM_SELECTOR as PHOTO_SEND_BUTTON_SELECTOR,
+  CAPTION_EDITOR_SELECTOR,
+  CONFIRMED_OUTGOING_SELECTOR,
+  MESSAGE_LAYOUT_FIX_SELECTOR,
+  MESSAGE_TEXT_SELECTOR,
+  MESSAGE_TIME_SELECTOR,
+  OUTGOING_BUBBLE_SELECTOR,
+  PREVIEW_ALBUM_SELECTOR,
+  PREVIEW_DOCUMENT_ITEM_SELECTOR,
+  PREVIEW_IMAGE_SELECTOR,
+  PREVIEW_MEDIA_ITEM_SELECTOR,
+  REPLY_OR_FORWARD_DRAFT_SELECTOR,
+  TEXT_SEND_BUTTON_SELECTOR,
+} from "./domContract";
 
-const TEXT_SEND_BUTTON_SELECTOR = ".btn-send";
-const ACTIVE_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
-const PREVIEW_IMAGE_SELECTOR = ".popup-item.popup-item-media img";
-const PREVIEW_MEDIA_ITEM_SELECTOR = ".popup-item.popup-item-media";
-const PREVIEW_DOCUMENT_ITEM_SELECTOR = ".popup-item.popup-item-document";
-const PREVIEW_ALBUM_SELECTOR = ".popup-item-album";
-const CAPTION_EDITOR_SELECTOR =
-  '.simple-message-input-input[contenteditable="true"]:not(.input-field-input-fake)';
-const PHOTO_SEND_BUTTON_SELECTOR = ".simple-message-input-confirm";
-const REPLY_OR_FORWARD_DRAFT_SELECTOR = ".reply-wrapper";
-// Telegram Web K renders acknowledged messages from the current account as is-out bubbles.
-// Requiring data-mid avoids treating preview closure or a transient upload placeholder as success.
-const OUTGOING_BUBBLE_SELECTOR =
-  ".bubble.is-out[data-mid][data-peer-id], .bubble.is-out .grouped-item[data-mid]";
-const MESSAGE_TEXT_SELECTOR = ".message";
-const MESSAGE_TIME_SELECTOR = ".time";
-const MESSAGE_LAYOUT_FIX_SELECTOR = ".clearfix";
 
 /** Confirmed or fail-closed outcome of exactly one native Send attempt. */
 export type TelegramSendResult =
@@ -453,13 +452,13 @@ export class TelegramSendAdapter {
 
   private findOutgoingBubbles(peerKey: string): HTMLElement[] {
     // Exact attribute comparison avoids interpolating Telegram's opaque peer key into CSS.
-    return Array.from(document.querySelectorAll<HTMLElement>(OUTGOING_BUBBLE_SELECTOR)).filter(
-      (bubble) => (bubble.dataset.peerId ?? bubble.closest<HTMLElement>(".bubble.is-out")?.dataset.peerId) === peerKey,
+    return Array.from(document.querySelectorAll<HTMLElement>(CONFIRMED_OUTGOING_SELECTOR)).filter(
+      (bubble) => (bubble.dataset.peerId ?? bubble.closest<HTMLElement>(OUTGOING_BUBBLE_SELECTOR)?.dataset.peerId) === peerKey,
     );
   }
 
   private hasOneOutgoingGroup(messages: readonly HTMLElement[]): boolean {
-    const containers = new Set(messages.map((message) => message.closest(".bubble.is-out")));
+    const containers = new Set(messages.map((message) => message.closest(OUTGOING_BUBBLE_SELECTOR)));
     return !containers.has(null) && containers.size === 1;
   }
 

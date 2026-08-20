@@ -60,3 +60,28 @@ resolve target
 ```
 
 Every bounded retry restarts from resolution with fresh DOM. Source restore calls the same navigator with the immutable captured source peer. Mismatch or ambiguous composer state fails closed before Send.
+
+## Machine-checked token inventory
+
+The prose above is verified by hand at one pinned commit; upstream keeps moving. Three files turn
+the parts that can be checked automatically into a check:
+
+- `src/telegram/domContract.ts` — every Telegram-owned selector the code uses, in one module.
+  Project-owned markers (`data-clean-forward-*`) are deliberately not here.
+- `contracts/tweb-dom-contract.json` — the atomic tokens those selectors are built from, each with
+  a status: `required` (must exist upstream), `legacy` (kept for older builds), `dynamic` (upstream
+  composes the name at runtime, so a literal search cannot prove it — the note says where).
+- `scripts/check-tweb-contract.mjs` (`npm run check:tweb`) — downloads upstream sources at a ref and
+  reports every `required` token that no longer exists. The `Telegram DOM contract` workflow runs it
+  weekly and on any pull request that touches the contract.
+
+`tests/telegram/dom-contract.test.ts` closes the loop offline: a selector written straight into an
+adapter fails the suite unless its tokens are declared, so nothing can escape the upstream check by
+never being written down.
+
+### What this does not prove
+
+Only existence, never structure. A class that survives a refactor but moves to a different node
+still passes, and so does a selector whose ancestor chain no longer holds. Composed names
+(`'search-group-' + type`) are skipped outright. Treat a green run as “no token disappeared”, not as
+“the DOM contract still holds”; the manual checks in the README stay necessary.

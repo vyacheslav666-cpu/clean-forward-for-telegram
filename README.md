@@ -131,12 +131,26 @@ npm run validate
 - `build` создаёт `dist/clean-forward-for-telegram.user.js`;
 - `validate` последовательно запускает typecheck, tests и production build.
 
+Отдельно, потому что требует сети и зависит от чужого репозитория:
+
+```bash
+npm run check:tweb
+```
+
+`check:tweb` скачивает исходники Telegram Web K и проверяет, что каждый класс/id/атрибут из
+`contracts/tweb-dom-contract.json` там ещё существует. Это детектор дрейфа, а не доказательство
+корректности: он видит исчезновение токена, но не изменение структуры. Запускается еженедельно
+и на PR, меняющих сам контракт; подробности — в
+[docs/tweb-navigation-contract.md](docs/tweb-navigation-contract.md).
+
 Fixtures синтетические и не содержат реальных сообщений, peer IDs, cookies или Telegram session data.
 
 ## Архитектура
 
 - `src/domain/` — immutable source descriptors, transferable content, ordered bundle и pending in-memory state;
 - `src/telegram/capture/` — type-specific capture adapters с atomic fail-closed snapshot;
+- `src/telegram/domContract.ts` — единственное место, где живут селекторы Telegram Web K;
+- `contracts/tweb-dom-contract.json` — инвентарь токенов этого контракта для сверки с апстримом;
 - `src/telegram/` — Telegram DOM contracts, navigation, draft transaction, preparation и native Send confirmation;
 - `src/delivery/DeliveryBatch.ts` — nested recipient/item ledger и duplicate-prevention states;
 - `src/delivery/DeliveryCoordinator.ts` — последовательный N×M обход, retry boundaries, draft/source restoration;

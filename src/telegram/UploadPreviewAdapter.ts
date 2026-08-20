@@ -7,18 +7,19 @@ import { insertTextNatively } from "./nativeTextEditing";
 import { OutgoingInFlightBaseline } from "./outgoingMessageState";
 import { readTelegramText } from "./readTelegramText";
 import { waitForCondition } from "./waitForCondition";
+import {
+  ACTIVE_MEDIA_PREVIEW_SELECTOR as ACTIVE_PREVIEW_SELECTOR,
+  CAPTION_CONFIRM_SELECTOR as CONFIRM_BUTTON_SELECTOR,
+  CAPTION_EDITOR_SELECTOR,
+  PREVIEW_ALBUM_SELECTOR as ALBUM_ITEM_SELECTOR,
+  PREVIEW_CLOSE_SELECTOR as CLOSE_BUTTON_SELECTOR,
+  PREVIEW_DOCUMENT_ITEM_SELECTOR as DOCUMENT_ITEM_SELECTOR,
+  PREVIEW_IMAGE_SELECTOR,
+  PREVIEW_MEDIA_ITEM_SELECTOR as MEDIA_ITEM_SELECTOR,
+  UNREADY_MEDIA_SELECTOR,
+  UNSTABLE_EDITOR_SELECTOR,
+} from "./domContract";
 
-const ACTIVE_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
-const PREVIEW_IMAGE_SELECTOR = ".popup-item.popup-item-media img";
-const MEDIA_ITEM_SELECTOR = ".popup-item.popup-item-media";
-const DOCUMENT_ITEM_SELECTOR = ".popup-item.popup-item-document";
-const ALBUM_ITEM_SELECTOR = ".popup-item-album";
-const CAPTION_EDITOR_SELECTOR =
-  '.simple-message-input-input[contenteditable="true"]:not(.input-field-input-fake)';
-const CONFIRM_BUTTON_SELECTOR = ".simple-message-input-confirm";
-const CLOSE_BUTTON_SELECTOR = ".popup-close";
-const UNSTABLE_EDITOR_SELECTOR = ".animating, .is-changing-height";
-const UNREADY_MEDIA_SELECTOR = ".preloader, .render-progress";
 const POPUP_APPEAR_TIMEOUT_MS = 5_000;
 const PREVIEW_READY_TIMEOUT_MS = 10_000;
 const CAPTION_STABLE_TIMEOUT_MS = 2_000;

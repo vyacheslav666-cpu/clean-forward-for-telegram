@@ -116,8 +116,6 @@ export const CONFIRMED_OUTGOING_SELECTOR =
  */
 export const IN_FLIGHT_SELECTOR = ".is-outgoing, .is-sending, .sending";
 export const FAILED_SELECTOR = ".is-error";
-/** Legacy in-flight marker, retained for builds older than the `is-sending` rename. */
-export const SENDING_SELECTOR = ".sending";
 
 /* ------------------------------------------------------------------ *
  * Native selection mode
@@ -153,7 +151,10 @@ export const MENU_ITEMS_WRAPPER_SELECTOR = ".btn-menu-items";
 export const MENU_ITEM_SELECTOR = ".btn-menu-item";
 export const OWNED_MENU_ITEM_SELECTOR = ":scope > .btn-menu-item";
 export const MENU_ITEM_TEXT_SELECTOR = ".btn-menu-item-text";
-/** Removed from current Web K, which closes menus through a document-level overlay handler. */
+/**
+ * Web K still creates this overlay, but from the document-level handler in
+ * `helpers/overlayClickHandler.ts` rather than inside the menu element.
+ */
 export const MENU_OVERLAY_SELECTOR = ".btn-menu-overlay";
 /** Class Telegram's own toggle handler uses to decide whether a further click opens or closes. */
 export const MENU_OPEN_CLASS = "menu-open";
@@ -184,5 +185,9 @@ export const CAPTION_EDITOR_SELECTOR =
 export const CAPTION_CONFIRM_SELECTOR = ".simple-message-input-confirm";
 export const PREVIEW_CLOSE_SELECTOR = ".popup-close";
 export const UNSTABLE_EDITOR_SELECTOR = ".animating, .is-changing-height";
+/**
+ * `.render-progress` no longer exists upstream — `RenderProgressCircle` renders an inline-styled
+ * div with no class — so preview readiness currently rests on `.preloader` alone.
+ */
 export const UNREADY_MEDIA_SELECTOR = ".preloader, .render-progress";
 export const REPLY_OR_FORWARD_DRAFT_SELECTOR = ".reply-wrapper";

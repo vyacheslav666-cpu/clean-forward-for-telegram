@@ -1,14 +1,21 @@
 /** Adds the Clean Forward action using the verified Telegram Web K menu structure. */
 import { CLEAN_FORWARD_RUNTIME_FINGERPRINT } from "../app/CleanForwardRuntime";
 import type { Logger } from "../utils/logger";
+import {
+  ACTIVE_CLASS,
+  ACTIVE_MESSAGE_MENU_SELECTOR,
+  MENU_ITEM_CLASSES,
+  MENU_ITEM_ICON_CLASSES,
+  MENU_ITEM_TEXT_CLASS,
+  MENU_ITEM_TEXT_SELECTOR as NATIVE_ITEM_TEXT_SELECTOR,
+  OWNED_MENU_ITEM_SELECTOR as NATIVE_ITEM_SELECTOR,
+} from "./domContract";
 
 const ACTION_ATTRIBUTE = "data-clean-forward-context-action";
 const ACTION_OWNER_ATTRIBUTE = "data-clean-forward-runtime-owner";
 const ACTION_LABEL = "Отправить как новое";
 /** Plural wording marks the multi-message bundle so the two menus are never confused. */
 export const SELECTION_ACTION_LABEL = "Отправить как новые";
-const NATIVE_ITEM_SELECTOR = ":scope > .btn-menu-item";
-const NATIVE_ITEM_TEXT_SELECTOR = ".btn-menu-item-text";
 /**
  * Telegram renders a different menu once selection mode owns the bubbles, so both anchors are
  * accepted. Matching by label keeps the action next to native forwarding in either menu without
@@ -78,15 +85,15 @@ export class ContextMenuIntegration {
     }
 
     const item = document.createElement("div");
-    item.classList.add("btn-menu-item", "rp-overflow");
+    item.classList.add(...MENU_ITEM_CLASSES);
     this.stampOwner(item);
 
     const icon = document.createElement("span");
-    icon.classList.add("tgico", "btn-menu-item-icon");
+    icon.classList.add(...MENU_ITEM_ICON_CLASSES);
     icon.textContent = "";
 
     const label = document.createElement("span");
-    label.classList.add("btn-menu-item-text");
+    label.classList.add(MENU_ITEM_TEXT_CLASS);
     label.textContent = labelText;
     item.append(icon, label);
 
@@ -172,7 +179,7 @@ export class ContextMenuIntegration {
 
   /** Repeats Telegram's vertical viewport clamp after the late menu-item insertion. */
   private clampMenuToViewport(menuItems: HTMLElement): void {
-    const menu = menuItems.closest<HTMLElement>(".btn-menu.contextmenu.active");
+    const menu = menuItems.closest<HTMLElement>(ACTIVE_MESSAGE_MENU_SELECTOR);
     const view = menu?.ownerDocument.defaultView;
     if (!menu || !view) {
       return;
@@ -180,7 +187,7 @@ export class ContextMenuIntegration {
 
     view.requestAnimationFrame(() => {
       view.requestAnimationFrame(() => {
-        if (!menu.isConnected || !menu.classList.contains("active")) {
+        if (!menu.isConnected || !menu.classList.contains(ACTIVE_CLASS)) {
           return;
         }
 

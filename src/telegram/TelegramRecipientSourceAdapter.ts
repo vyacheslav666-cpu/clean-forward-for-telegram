@@ -4,31 +4,25 @@ import type { RecipientSourceAdapter } from "../recipient/RecipientSourceAdapter
 import { findActiveComposerContext } from "./TelegramComposerDom";
 import { TelegramPeerEligibility, type RecipientSourceKind } from "./TelegramPeerEligibility";
 import { readTelegramText } from "./readTelegramText";
+import {
+  ACTIVE_CHAT_TITLE_SELECTOR,
+  ACTIVE_DIALOG_LIST_SELECTOR,
+  ACTIVE_DIALOG_ROW_SELECTOR,
+  AVATAR_IMAGE_SELECTOR,
+  DIALOG_ROW_SELECTOR,
+  LEFT_COLUMN_SELECTOR,
+  NATIVE_SEARCH_BACK_SELECTOR,
+  NATIVE_SEARCH_INPUT_SELECTOR,
+  NATIVE_SEARCH_MAIN_SELECTOR,
+  NATIVE_SEARCH_RESULTS_SELECTOR,
+  NATIVE_SEARCH_ROW_SELECTOR,
+  NON_DIALOG_SEARCH_GROUP_SELECTOR,
+  PEER_TITLE_SELECTOR as TITLE_SELECTOR,
+  ROW_SUBTITLE_SELECTOR as SUBTITLE_SELECTOR,
+  SEARCH_ACTIVE_CLASS,
+  SUBTITLE_IGNORED_SELECTORS,
+} from "./domContract";
 
-const ACTIVE_DIALOG_LIST_SELECTOR =
-  ".tabs-tab.chatlist-parts.active ul.chatlist.virtual-chatlist";
-const DIALOG_ROW_SELECTOR = ":scope > a.row.chatlist-chat[data-peer-id]";
-const ACTIVE_DIALOG_ROW_SELECTOR =
-  ".tabs-tab.chatlist-parts.active a.row.chatlist-chat.active[data-peer-id]";
-const LEFT_COLUMN_SELECTOR = "#column-left";
-const NATIVE_SEARCH_INPUT_SELECTOR =
-  "#column-left .sidebar-header input.input-search-input[type=\"text\"]";
-const NATIVE_SEARCH_MAIN_SELECTOR = "#column-left .sidebar-slider-item.item-main";
-const NATIVE_SEARCH_RESULTS_SELECTOR =
-  "#column-left #search-container .search-super-content-chats";
-const NATIVE_SEARCH_ROW_SELECTOR = "a.row.chatlist-chat[data-peer-id]";
-const NATIVE_SEARCH_BACK_SELECTOR =
-  "#column-left .sidebar-header .sidebar-back-button";
-const TITLE_SELECTOR = ".peer-title";
-const ACTIVE_CHAT_TITLE_SELECTOR = ".topbar .peer-title, .topbar .user-title";
-const SUBTITLE_SELECTOR = ".row-subtitle";
-const AVATAR_IMAGE_SELECTOR = ".avatar img";
-const SUBTITLE_IGNORED_SELECTORS = [
-  ".badge",
-  ".dialog-subtitle-badge",
-  ".sending-status",
-  ".message-time",
-] as const;
 const SEARCH_TEARDOWN_SETTLE_MS = 180;
 const SEARCH_TEARDOWN_TIMEOUT_MS = 750;
 
@@ -117,7 +111,7 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
     if (!this.nativeSearchState) {
       this.nativeSearchState = {
         originalValue: input.value,
-        wasActive: main.classList.contains("is-search-active"),
+        wasActive: main.classList.contains(SEARCH_ACTIVE_CLASS),
       };
     }
 
@@ -154,7 +148,7 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
     };
     signal.addEventListener("abort", abort, { once: true });
 
-    if (!main.classList.contains("is-search-active")) {
+    if (!main.classList.contains(SEARCH_ACTIVE_CLASS)) {
       input.focus({ preventScroll: true });
     }
     this.setNativeSearchValue(input, normalizedQuery);
@@ -186,12 +180,12 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
       if (input.value !== state.originalValue) {
         this.setNativeSearchValue(input, state.originalValue);
       }
-      if (!state.wasActive && main.classList.contains("is-search-active")) {
+      if (!state.wasActive && main.classList.contains(SEARCH_ACTIVE_CLASS)) {
         this.findUniqueElement<HTMLElement>(NATIVE_SEARCH_BACK_SELECTOR)?.click();
       }
       return (
         input.value === state.originalValue &&
-        main.classList.contains("is-search-active") === state.wasActive
+        main.classList.contains(SEARCH_ACTIVE_CLASS) === state.wasActive
       );
     };
 
@@ -239,7 +233,7 @@ export class TelegramRecipientSourceAdapter implements RecipientSourceAdapter {
 
     const recipients = new Map<string, Recipient>();
     for (const row of container.querySelectorAll<HTMLElement>(NATIVE_SEARCH_ROW_SELECTOR)) {
-      if (row.closest(".search-group-recent, .search-group-messages")) {
+      if (row.closest(NON_DIALOG_SEARCH_GROUP_SELECTOR)) {
         continue;
       }
       const recipient = this.readRecipient(row, "search", searchQuery);

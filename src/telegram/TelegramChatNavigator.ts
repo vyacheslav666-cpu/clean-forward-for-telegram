@@ -9,16 +9,18 @@ import {
   type TelegramComposerContext,
 } from "./TelegramComposerDom";
 import { OutgoingInFlightBaseline } from "./outgoingMessageState";
+import {
+  ACTIVE_DIALOG_LIST_SELECTOR,
+  ACTIVE_MEDIA_PREVIEW_SELECTOR as MEDIA_PREVIEW_SELECTOR,
+  CHAT_SELECTOR,
+  DIALOG_ROW_SELECTOR,
+  FORUM_MARKER_SELECTOR,
+  HIDDEN_ANCESTOR_SELECTOR,
+  NATIVE_FORWARD_POPUP_SELECTOR,
+  REPLY_OR_FORWARD_DRAFT_SELECTOR,
+  SEARCH_DIALOG_ROW_SELECTOR,
+} from "./domContract";
 
-const ACTIVE_DIALOG_LIST_SELECTOR =
-  ".tabs-tab.chatlist-parts.active ul.chatlist.virtual-chatlist";
-const DIALOG_ROW_SELECTOR = ":scope > a.row.chatlist-chat[data-peer-id]";
-const SEARCH_DIALOG_ROW_SELECTOR =
-  "#column-left #search-container .search-super-content-chats a.row.chatlist-chat[data-peer-id]";
-const FORUM_MARKER_SELECTOR = ".is-forum";
-const NATIVE_FORWARD_POPUP_SELECTOR = ".popup.popup-forward.active";
-const MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
-const REPLY_OR_FORWARD_DRAFT_SELECTOR = ".reply-wrapper";
 const NAVIGATION_POLL_INTERVAL_MS = 50;
 const REQUIRED_STABLE_POLLS = 3;
 const DESTINATION_NAVIGATION_POLICY = {
@@ -434,7 +436,7 @@ export class TelegramChatNavigator {
     if (!context.composer.isConnected || !context.container.isConnected) {
       return false;
     }
-    const hiddenAncestor = context.composer.closest<HTMLElement>('[hidden], [aria-hidden="true"]');
+    const hiddenAncestor = context.composer.closest<HTMLElement>(HIDDEN_ANCESTOR_SELECTOR);
     const composerStyle = getComputedStyle(context.composer);
     const containerStyle = getComputedStyle(context.container);
     return !hiddenAncestor && composerStyle.display !== "none" &&
@@ -472,7 +474,7 @@ export class TelegramChatNavigator {
     if (!active || active.peerId !== wait.recipient.peerKey) {
       return null;
     }
-    const scope: ParentNode = active.chat ?? active.container.closest(".chat") ?? document;
+    const scope: ParentNode = active.chat ?? active.container.closest(CHAT_SELECTOR) ?? document;
     if (!wait.inFlightBaseline) {
       wait.inFlightBaseline = new OutgoingInFlightBaseline(scope);
       return null;

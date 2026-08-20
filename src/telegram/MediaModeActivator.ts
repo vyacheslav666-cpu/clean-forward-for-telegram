@@ -6,21 +6,18 @@ import {
 } from "./TelegramComposerDom";
 import { TelegramIntegrationError } from "./TelegramIntegrationError";
 import { waitForCondition } from "./waitForCondition";
+import {
+  ACTIVE_CLASS,
+  ACTIVE_MEDIA_PREVIEW_SELECTOR,
+  ACTIVE_MENU_SELECTOR,
+  ATTACHMENT_BUTTON_SELECTOR,
+  FILE_INPUT_SELECTOR,
+  MENU_ITEM_SELECTOR,
+  MENU_ITEM_TEXT_SELECTOR,
+  MENU_OPEN_CLASS,
+  MENU_OVERLAY_SELECTOR,
+} from "./domContract";
 
-const FILE_INPUT_SELECTOR = '.new-message-wrapper input[type="file"]';
-/**
- * The attach control is Web K's `attach-menu-button` custom element. The `attach-file` class it
- * used to carry has been dropped, so matching the element itself keeps both builds working.
- */
-const ATTACHMENT_BUTTON_SELECTOR = "attach-menu-button";
-/** Class Telegram's own toggle handler uses to decide whether a further click opens or closes. */
-const MENU_OPEN_CLASS = "menu-open";
-const ACTIVE_MENU_SELECTOR = ".btn-menu.active";
-const MENU_ITEM_SELECTOR = ".btn-menu-item";
-const MENU_ITEM_TEXT_SELECTOR = ".btn-menu-item-text";
-/** Removed from current Web K, which closes menus through a document-level overlay handler. */
-const MENU_OVERLAY_SELECTOR = ".btn-menu-overlay";
-const ACTIVE_MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
 const VERIFIED_MENU_LABELS = Object.freeze({
   media: "Photo or Video",
   document: "Document",
@@ -217,7 +214,7 @@ export class MediaModeActivator {
       return true;
     }
 
-    activeMenu.classList.remove("active");
+    activeMenu.classList.remove(ACTIVE_CLASS);
     return true;
   }
 }

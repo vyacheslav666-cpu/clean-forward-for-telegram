@@ -1,15 +1,18 @@
 /** Locates the one active Telegram composer and its chat-scoped controls. */
 import { readTelegramText } from "./readTelegramText";
+import {
+  ACTIVE_COMPOSER_SELECTOR,
+  ACTIVE_DIALOG_ROW_SELECTOR as ACTIVE_DIALOG_ROW_IDENTITY_SELECTOR,
+  ACTIVE_MAIN_CHAT_SELECTOR,
+  CHAT_SELECTOR,
+  COMPOSER_CONTAINER_SELECTOR,
+  HIDDEN_CHAT_ANCESTOR_SELECTOR,
+  HIDDEN_CLASSES,
+  MAIN_CHATS_SELECTOR,
+  OWNED_COMPOSER_CONTAINER_SELECTOR,
+  TOPBAR_PEER_IDENTITY_SELECTOR,
+} from "./domContract";
 
-const ACTIVE_COMPOSER_SELECTOR =
-  '.input-message-input[contenteditable="true"][data-peer-id]';
-const COMPOSER_CONTAINER_SELECTOR = ".chat-input-main";
-const MAIN_CHATS_SELECTOR = "#column-center > .chats-container";
-const ACTIVE_MAIN_CHAT_SELECTOR = ":scope > .chat.tabs-tab.active";
-const OWNED_COMPOSER_CONTAINER_SELECTOR = ":scope > .chat-input.chat-input-main";
-const ACTIVE_DIALOG_ROW_IDENTITY_SELECTOR =
-  ".tabs-tab.chatlist-parts.active a.row.chatlist-chat.active[data-peer-id]";
-const TOPBAR_PEER_IDENTITY_SELECTOR = ".topbar .person-avatar[data-peer-id]";
 
 /** Verified DOM context for the currently active destination chat. */
 export interface TelegramComposerContext {
@@ -61,7 +64,7 @@ export function findActiveComposerContext(
     const peerId = composer.dataset.peerId?.trim() ?? "";
     if (
       !peerId ||
-      composer.closest(".chat") !== chat ||
+      composer.closest(CHAT_SELECTOR) !== chat ||
       composerHidden(composer) ||
       composer.getAttribute("aria-disabled") === "true"
     ) {
@@ -133,9 +136,8 @@ function isHidden(element: HTMLElement): boolean {
     !element.isConnected ||
     element.hidden ||
     element.getAttribute("aria-hidden") === "true" ||
-    element.classList.contains("hide") ||
-    element.classList.contains("is-hidden") ||
-    element.closest('[hidden], [aria-hidden="true"], .chat.hide, .chat.is-hidden')
+    HIDDEN_CLASSES.some((hiddenClass) => element.classList.contains(hiddenClass)) ||
+    element.closest(HIDDEN_CHAT_ANCESTOR_SELECTOR)
   ) {
     return true;
   }

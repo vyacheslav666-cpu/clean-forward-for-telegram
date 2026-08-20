@@ -19,42 +19,35 @@ import type {
   TelegramDomVideoSnapshot,
   TelegramMessageSnapshot,
 } from "./TelegramSourceSnapshot";
+import {
+  ACTIVE_CHAT_TITLE_SELECTOR,
+  ACTIVE_CLASS,
+  ACTIVE_DIALOG_ROW_SELECTOR,
+  ACTIVE_MEDIA_PREVIEW_SELECTOR,
+  ACTIVE_MESSAGE_MENU_SELECTOR as ACTIVE_MESSAGE_MENU_WRAPPER_SELECTOR,
+  ANIMATION_SELECTOR,
+  GROUPED_CLASS,
+  GROUPED_ITEM_SELECTOR,
+  MEDIA_CONTAINER_SELECTOR,
+  MENU_ITEMS_WRAPPER_SELECTOR,
+  MENU_ITEM_SELECTOR,
+  MENU_OVERLAY_SELECTOR,
+  MESSAGE_ATTACHMENT_SELECTOR,
+  MESSAGE_IDENTITY_SELECTOR,
+  MESSAGE_LAYOUT_FIX_SELECTOR,
+  MESSAGE_PHOTO_SELECTOR,
+  MESSAGE_ROOT_SELECTOR,
+  MESSAGE_TEXT_SELECTOR,
+  MESSAGE_TIME_SELECTOR,
+  MESSAGE_VIDEO_SELECTOR,
+  NATIVE_SEARCH_INPUT_SELECTOR,
+  PEER_TITLE_SELECTOR,
+  REPLY_OR_FORWARD_DRAFT_SELECTOR as REPLY_EDIT_OR_FORWARD_SELECTOR,
+  ROUND_VIDEO_SELECTOR,
+  SEARCH_DIALOG_ROW_SELECTOR,
+  SEARCH_MESSAGES_GROUP_SELECTOR,
+} from "./domContract";
 
-const MESSAGE_ROOT_SELECTOR = ".bubble[data-mid][data-peer-id]";
-const GROUPED_ITEM_SELECTOR = ".grouped-item[data-mid][data-peer-id]";
-const MESSAGE_IDENTITY_SELECTOR = `${GROUPED_ITEM_SELECTOR}, ${MESSAGE_ROOT_SELECTOR}`;
-const MESSAGE_TEXT_SELECTOR = ".message";
-const MESSAGE_TIME_SELECTOR = ".time";
-const MESSAGE_LAYOUT_FIX_SELECTOR = ".clearfix";
-const MESSAGE_PHOTO_SELECTOR = "img.media-photo";
-// Web K tags every playable bubble video with this class, then wraps round notes in .media-round
-// and GIF/animation in .media-gif-wrapper. Only the bare case is an ordinary re-uploadable video.
-const MESSAGE_VIDEO_SELECTOR = "video.media-video";
-const ROUND_VIDEO_SELECTOR = ".media-round";
-const MEDIA_CONTAINER_SELECTOR = ".attachment, .media-container";
-const ANIMATION_SELECTOR = ".media-gif-wrapper";
-const MESSAGE_ATTACHMENT_SELECTOR = ".attachment";
-const ACTIVE_MESSAGE_MENU_WRAPPER_SELECTOR = ".btn-menu.contextmenu.active";
-/**
- * Web K appends menu items straight into `.btn-menu`. It only moves them into this wrapper (and
- * adds `has-items-wrapper`) when a reactions bar is attached, which happens on desktop and never
- * in selection mode. Requiring the wrapper therefore matched a single desktop case and silently
- * disabled the action on mobile and for every multi-selection menu.
- */
-const MENU_ITEMS_WRAPPER_SELECTOR = ".btn-menu-items";
-const MENU_ITEM_SELECTOR = ".btn-menu-item";
-/** Removed from current Web K, which closes menus through a document-level overlay handler. */
-const MENU_OVERLAY_SELECTOR = ".btn-menu-overlay";
-const ACTIVE_MEDIA_PREVIEW_SELECTOR = ".popup-send-photo.popup-new-media.active";
-const REPLY_EDIT_OR_FORWARD_SELECTOR = ".reply-wrapper";
-const ACTIVE_DIALOG_ROW_SELECTOR =
-  ".tabs-tab.chatlist-parts.active a.row.chatlist-chat.active[data-peer-id]";
-const SEARCH_DIALOG_ROW_SELECTOR =
-  "#column-left #search-container .search-super-content-chats a.row.chatlist-chat[data-peer-id]";
-const ACTIVE_CHAT_TITLE_SELECTOR = ".topbar .peer-title, .topbar .user-title";
-const PEER_TITLE_SELECTOR = ".peer-title";
-const NATIVE_SEARCH_INPUT_SELECTOR =
-  '#column-left .sidebar-header input.input-search-input[type="text"]';
 
 /**
  * Source identity is read, never written, so a composer hidden behind the selection plate still
@@ -257,7 +250,7 @@ export class TelegramDomAdapter {
     );
     const grouped =
       message.matches(GROUPED_ITEM_SELECTOR) ||
-      message.classList.contains("is-grouped") ||
+      message.classList.contains(GROUPED_CLASS) ||
       Boolean(message.querySelector(GROUPED_ITEM_SELECTOR));
 
     return {
@@ -449,7 +442,7 @@ export class TelegramDomAdapter {
     ).filter((row) =>
       row.dataset.peerId?.trim() === peerKey &&
       !row.hasAttribute("data-mid") &&
-      !row.closest(".search-group-messages"));
+      !row.closest(SEARCH_MESSAGES_GROUP_SELECTOR));
     return matchingRows.length > 0 ? query : null;
   }
 
@@ -555,10 +548,10 @@ export class TelegramDomAdapter {
       // Current Web K has no per-menu overlay element: its controller closes a menu by dropping
       // `active`. Repeating that exact class change is safer than synthesizing a document click,
       // which every other Telegram handler would also receive.
-      menu.classList.remove("active");
+      menu.classList.remove(ACTIVE_CLASS);
     }
 
-    const dismissed = !menu.classList.contains("active");
+    const dismissed = !menu.classList.contains(ACTIVE_CLASS);
     this.log.info("Закрытие контекстного меню запрошено.", { dismissed });
     return dismissed;
   }

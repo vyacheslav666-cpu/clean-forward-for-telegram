@@ -1,10 +1,14 @@
 import { isSimplePeerKey } from "../recipient/Recipient";
 import { readTelegramText } from "./readTelegramText";
+import {
+  ACTIVE_CHATLIST_ROW_SELECTOR as ACTIVE_ROW_SELECTOR,
+  BROADCAST_STATUS_SELECTOR,
+  COMPOSER_SELECTOR,
+  DISABLED_ROW_SELECTOR,
+  FORUM_MARKER_SELECTOR,
+  HIDDEN_COMPOSER_ANCESTOR_SELECTOR,
+} from "./domContract";
 
-const ACTIVE_ROW_SELECTOR = "a.row.chatlist-chat.active[data-peer-id]";
-const COMPOSER_SELECTOR = ".input-message-input[data-peer-id]";
-const BROADCAST_STATUS_SELECTOR = ".row-subtitle .i18n";
-const FORUM_MARKER_SELECTOR = ".is-forum";
 const BROADCAST_STATUS_PATTERN =
   /\bsubscribers?\b|подписчик(?:а|ов|и)?|підписник(?:а|и|ів)?/iu;
 
@@ -21,7 +25,7 @@ export class TelegramPeerEligibility {
       !isSimplePeerKey(peerKey) ||
       row.dataset.sponsored === "true" ||
       row.querySelector(FORUM_MARKER_SELECTOR) ||
-      row.matches('[aria-disabled="true"], .disabled, .is-disabled')
+      row.matches(DISABLED_ROW_SELECTOR)
     ) {
       return false;
     }
@@ -71,7 +75,7 @@ export class TelegramPeerEligibility {
     if (
       composer.getAttribute("contenteditable") !== "true" ||
       composer.getAttribute("aria-disabled") === "true" ||
-      composer.closest('[hidden], [aria-hidden="true"], .is-chat-input-hidden')
+      composer.closest(HIDDEN_COMPOSER_ANCESTOR_SELECTOR)
     ) {
       return false;
     }

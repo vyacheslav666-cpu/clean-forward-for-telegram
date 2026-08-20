@@ -6,19 +6,18 @@ import type {
   TelegramMessageSnapshot,
   TelegramSourceTargetSnapshot,
 } from "./TelegramSourceSnapshot";
+import {
+  CHECKED_SELECTION_SELECTOR,
+  GROUPED_MESSAGE_SELECTOR,
+  MESSAGE_IDENTITY_SELECTOR,
+  SELECTED_MESSAGE_SELECTOR,
+  SELECTING_HISTORY_SELECTOR,
+  SELECTION_COUNT_SELECTOR,
+  SELECTION_FORWARD_SELECTOR,
+  SELECTION_TOOLBAR_SELECTOR,
+  SELECTION_WRAPPER_SELECTOR,
+} from "./domContract";
 
-const SELECTION_WRAPPER_SELECTOR = ".chat-input-wrapper.selection-wrapper";
-const SELECTION_TOOLBAR_SELECTOR = ".chat-input-plate.selection-container";
-const SELECTION_FORWARD_SELECTOR = ".selection-container-forward";
-const SELECTION_COUNT_SELECTOR = ".selection-container-count";
-const SELECTING_HISTORY_SELECTOR = ".bubbles.is-selecting";
-const SELECTED_MESSAGE_SELECTOR =
-  ".bubble.is-selected[data-mid][data-peer-id], .grouped-item.is-selected[data-mid][data-peer-id]";
-const CHECKED_SELECTION_SELECTOR =
-  '.bubble-select-checkbox input.checkbox-field-input[type="checkbox"]:checked';
-const MESSAGE_IDENTITY_SELECTOR =
-  ".grouped-item[data-mid][data-peer-id], .bubble[data-mid][data-peer-id]";
-const GROUPED_MESSAGE_SELECTOR = ".grouped-item, .bubble.is-grouped";
 const STRICT_COUNT_PATTERN = /^(?:\D*?)(\d+)(?:\D*)$/;
 
 /** Active normal-chat selection toolbar verified against the pinned Web K source revision. */

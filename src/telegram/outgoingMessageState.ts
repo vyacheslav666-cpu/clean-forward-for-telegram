@@ -15,9 +15,11 @@
  * an album bubble loses `is-outgoing` as soon as its first part is acknowledged, while the
  * remaining grouped items still hold temporary mids.
  */
-const IN_FLIGHT_SELECTOR = ".is-outgoing, .is-sending, .sending";
-const FAILED_SELECTOR = ".is-error";
-const OUTGOING_BUBBLE_SELECTOR = ".bubble.is-out";
+import {
+  FAILED_SELECTOR,
+  IN_FLIGHT_SELECTOR,
+  OUTGOING_BUBBLE_SELECTOR,
+} from "./domContract";
 /**
  * Cheap DOM-level prefilter for the two shapes an unconfirmed send can take: a status class, or
  * the fractional `data-mid` Web K hands out before the server answers. It only narrows which nodes

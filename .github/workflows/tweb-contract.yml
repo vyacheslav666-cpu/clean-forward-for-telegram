@@ -1,0 +1,38 @@
+name: Telegram DOM contract
+
+# Drift detection against upstream Telegram Web K, deliberately separate from `Validate`:
+# it depends on a third-party repository and the network, so it must never be what decides
+# whether an unrelated change is mergeable.
+on:
+  schedule:
+    # Weekly, Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Upstream tweb ref to check against (branch or commit sha)"
+        required: false
+        default: "master"
+  # Changing the contract itself is exactly when the assumption is worth re-checking.
+  pull_request:
+    paths:
+      - "contracts/tweb-dom-contract.json"
+      - "src/telegram/domContract.ts"
+      - "scripts/check-tweb-contract.mjs"
+      - ".github/workflows/tweb-contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Check DOM contract against upstream
+        run: node scripts/check-tweb-contract.mjs --ref "${{ inputs.ref || 'master' }}"

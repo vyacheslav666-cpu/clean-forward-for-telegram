@@ -2,17 +2,18 @@
 import { CLEAN_FORWARD_RUNTIME_FINGERPRINT } from "../app/CleanForwardRuntime";
 import type { Logger } from "../utils/logger";
 import type { TelegramSelectionContext } from "./TelegramSelectionDomAdapter";
+import {
+  PLATE_SIDE_CLASS,
+  SELECTION_FORWARD_CLASS as NATIVE_FORWARD_CLASS,
+} from "./domContract";
 
 const ACTION_ATTRIBUTE = "data-clean-forward-selection-action";
 const ACTION_OWNER_ATTRIBUTE = "data-clean-forward-runtime-owner";
 const SLOT_ATTRIBUTE = "data-clean-forward-selection-slot";
 const ACTION_CLASS = "clean-forward-selection-action";
-const NATIVE_FORWARD_CLASS = "selection-container-forward";
 const ACTION_LABEL = "Отправить как новое";
 /** The toolbar is icon-sized on mobile, so the visible wording stays short; `title` carries the rest. */
 const ACTION_SHORT_LABEL = "Как новое";
-/** Telegram's own side-slot class, reused so the action inherits the plate's button sizing. */
-const PLATE_SIDE_CLASS = "chat-input-plate-side";
 /** Same tgico glyph the context-menu item already uses. */
 const ACTION_ICON = "";
 
