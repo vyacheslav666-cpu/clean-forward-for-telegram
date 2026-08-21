@@ -112,8 +112,8 @@ npm run validate
 
 После новой сборки нужно повторно заменить код в Tampermonkey: уже установленная
 копия не синхронизируется с локальным `dist` автоматически. Текущий релиз —
-`0.1.10`; версия показывается не только в userscript header, но и в заголовках
-picker/progress UI. Если там нет `v0.1.10`, новый runtime не запущен.
+`0.1.11`; версия показывается не только в userscript header, но и в заголовках
+picker/progress UI. Если там нет `v0.1.11`, новый runtime не запущен.
 
 Сборка содержит header с `@match https://web.telegram.org/k/*`.
 
@@ -155,7 +155,7 @@ Fixtures синтетические и не содержат реальных с
 - `src/delivery/DeliveryBatch.ts` — nested recipient/item ledger и duplicate-prevention states;
 - `src/delivery/DeliveryCoordinator.ts` — последовательный N×M обход, retry boundaries, draft/source restoration;
 - `src/recipient/` — immutable recipient selection и picker controller;
-- `src/ui/` — Shadow DOM picker и progress UI без Telegram selectors;
+- `src/ui/` — Shadow DOM picker и progress UI без Telegram selectors; поведение панели прогресса разобрано в [docs/delivery-progress-panel.md](docs/delivery-progress-panel.md);
 - `tests/` — domain, DOM, integration и reliability regressions.
 
 Payload и binary Blob живут только в памяти. `localStorage`, IndexedDB, Telegram Bot API, native Forward и private Telegram send methods не используются.
