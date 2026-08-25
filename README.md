@@ -30,7 +30,8 @@
 | GIF/animation | Verified model + полные bytes/metadata | `Photo or Video` preview + native confirm | **Не поддерживается production capture:** strategy test-only; Telegram также может транскодировать media |
 | Document | Verified model + полные bytes/имя/MIME | `Document` preview + native confirm | **Не поддерживается production capture:** strategy test-only; thumbnail не считается содержимым файла |
 | Audio/music | Verified model + полные bytes/metadata | `Document` preview + native confirm | **Не поддерживается production capture:** strategy test-only; voice message не преобразуется в audio file |
-| Photo/video album | Полный verified `grouped_id`, 2–10 items | Один grouped preview и один native confirm | **Не поддерживается production capture без model bridge**; DOM-only ambiguous album отклоняется целиком. План подключения — [docs/album-model-bridge-plan.md](docs/album-model-bridge-plan.md) |
+| Фото-альбом | `grouped_id` и число участников из read-only model bridge, байты из DOM | Один grouped preview и один native confirm | Поддерживается: 2–10 обычных фото. Альбом копируется только целиком; когда bridge не отвечает, группу нельзя доказать и она отклоняется как раньше |
+| Альбом с видео, GIF или смешанный | Группа доказывается, содержимое — нет | Нет | Отклоняется отдельной формулировкой: `PopupNewMedia.iterate` в Web K может разбить такой альбом на несколько Send, и критерий «одна группа = одно сообщение» перестал бы описывать результат |
 | Несколько сообщений | Ordered immutable bundle | По одному item/group за раз | Поддерживается, если каждый unit имеет безопасную capture и delivery strategy |
 | Formatted text/caption | Entities сохраняются в generalized model | Нет lossless DOM injection | Explicit fail-before-Send; форматирование не сбрасывается молча |
 | Exact/disabled link preview | Policy сохраняется в model | Нет доказанного точного native control | Explicit fail-before-Send |
@@ -40,7 +41,7 @@
 | Service, game, invoice, story, giveaway, dice | Explicit discriminator | Не реализовано | Unsupported (RED) |
 | Protected, TTL/ephemeral, paid или unavailable media | Restriction flags | Запрещено | Capture отклоняется целиком до recipient picker |
 
-Нельзя описывать проект как поддерживающий «любое сообщение Telegram»: capture adapter сам по себе не означает end-to-end поддержку. Для model-backed типов production Web K должен предоставить проверяемый read-only model bridge и полные binary bytes; неизвестное состояние отклоняется.
+Нельзя описывать проект как поддерживающий «любое сообщение Telegram»: capture adapter сам по себе не означает end-to-end поддержку. Для model-backed типов нужны и проверяемый read-only model bridge, и полные binary bytes; неизвестное состояние отклоняется. Bridge подключён только для доказательства альбома — он отвечает на вопрос «какая это группа и сколько в ней участников», а байты по-прежнему читаются из DOM, поэтому моделировать каждое семейство медиа не приходится.
 
 ## Reliability guarantees
 
@@ -59,7 +60,7 @@
   preview и очистка composer успехом не считаются;
 - захват медиа не тратит хранилище Telegram сверх необходимого: требуемое место проверяется до
   чтения, а чанки, которые захват заставил service worker сохранить, удаляются после него;
-- album подтверждается только полным ожидаемым набором новых grouped `data-mid`;
+- альбом подтверждается как одно исходящее сообщение, а не как N: Web K вешает `data-mid` и на бабл группы, и на каждый `.grouped-item`, поэтому identity схлопываются по `data-mid`. Бабл, чей mid не принадлежит ни одному его элементу, по-прежнему считается отдельным сообщением — ради этого случая проверка и существует;
 - automatic retry ограничен и разрешён только до Send;
 - после Send повтор item/group запрещён; неоднозначность становится `unknown` и останавливает batch;
 - user retry возобновляет только `pending`/`failed-before-send` pairs и не повторяет `sent`/`unknown-after-send`;
@@ -88,10 +89,11 @@ Recipient status вычисляется из вложенных item/group state
 - recipient navigation использует fresh exact `data-peer-id` rows, bounded native search и официальный `#/im?p=<peer>` только как initiation fallback; URL не считается peer proof;
 - forum topics, sponsored rows и неоднозначные peer keys не выбираются;
 - formatted drafts, reply/edit/forward state и существующий attachment preview не изменяются автоматически;
-- для album отклоняются incomplete group, несовместимое native partitioning, animation внутри группы и caption boundaries, которые нельзя сохранить;
+- альбом копируется только целиком и только непрерывным участком исходной ленты. Выбор части альбома и вызов из контекстного меню на одной фотографии отклоняются с указанием, сколько частей в альбоме: молча расширить выделение, которого никто не делал, запрещено. Отклоняются также incomplete group, несовместимое native partitioning, animation внутри группы и caption boundaries, которые нельзя сохранить;
 - browser E2E с авторизованной сессией не входит в автоматическую suite; реальные Send необходимо проверять только в контролируемых чатах.
 - DOM-контракт должен сверяться с исходным кодом Web K, а не с записями ручного исследования: три селектора уже отличались от реального кода и молча отключали интеграцию именно на мобильных и в selection mode, при полностью зелёной suite. Фикстуры воспроизводят предположения автора, поэтому сами по себе несовпадение контракта не ловят.
-- production bootstrap пока не предоставляет verified read-only Telegram model bridge; document/audio/album strategies не являются production support. Bridge технически достижим (`window.apiManagerProxy` смонтирован и в проде, юзерскрипт стоит с `@grant none`); план подключения только для фото-альбомов — [docs/album-model-bridge-plan.md](docs/album-model-bridge-plan.md);
+- read-only model bridge ([`src/telegram/TelegramModelBridge.ts`](src/telegram/TelegramModelBridge.ts)) подключён, но только для фото-альбомов: он отвечает на один вопрос — `grouped_id` и число участников. Document/audio strategies по-прежнему не являются production support;
+- bridge читает приватный `window.apiManagerProxy`. Это не контракт, а особенность сборки upstream: API неверсионируемый и может исчезнуть в любом деплое, поэтому отсутствие API, метода, исключение, неожиданная форма ответа и несовпавшая identity дают один и тот же `null` — ровно то поведение, которое было до появления bridge. Наличие API перепроверяется на каждом вызове, потому что Telegram обновляется под уже открытой вкладкой. `grouped_id` переносится строкой и никогда не парсится в число: он превышает 2^53, и разные альбомы начали бы сравниваться как равные;
 - video captured из DOM: поддерживается ровно одно обычное видео в сообщении, без photo рядом и вне album. Video note (кружок) и GIF/animation намеренно не считаются video, потому что повторная отправка через media path изменила бы смысл сообщения;
 - байты видео собираются полностью до отправки. Telegram отдаёт их своим service worker по частям, поэтому неизвестный общий размер или обрыв передачи отклоняются: усечённый файл остаётся воспроизводимым видео и молча заменил бы оригинал;
 - capture видео начинается только после того, как браузер сообщил его реальные размеры и длительность. До этого сообщение отклоняется, а не отправляется одной подписью;
@@ -138,7 +140,8 @@ npm run check:tweb
 ```
 
 `check:tweb` скачивает исходники Telegram Web K и проверяет, что каждый класс/id/атрибут из
-`contracts/tweb-dom-contract.json` там ещё существует. Это детектор дрейфа, а не доказательство
+`contracts/tweb-dom-contract.json` и каждый приватный символ из
+`contracts/tweb-api-contract.json` там ещё существует. Это детектор дрейфа, а не доказательство
 корректности: он видит исчезновение токена, но не изменение структуры. Запускается еженедельно
 и на PR, меняющих сам контракт; подробности — в
 [docs/tweb-navigation-contract.md](docs/tweb-navigation-contract.md).
@@ -156,6 +159,8 @@ Fixtures синтетические и не содержат реальных с
 - `src/telegram/capture/` — type-specific capture adapters с atomic fail-closed snapshot;
 - `src/telegram/domContract.ts` — единственное место, где живут селекторы Telegram Web K;
 - `contracts/tweb-dom-contract.json` — инвентарь токенов этого контракта для сверки с апстримом;
+- `src/telegram/TelegramModelBridge.ts` — единственное место, которому разрешено читать приватный API Telegram, ровно как `domContract.ts` — единственное место с селекторами;
+- `contracts/tweb-api-contract.json` — приватные символы, от которых зависит bridge; неверсионируемый API ломается тише, чем CSS-класс;
 - `src/telegram/` — Telegram DOM contracts, navigation, draft transaction, preparation и native Send confirmation;
 - `src/delivery/DeliveryBatch.ts` — nested recipient/item ledger и duplicate-prevention states;
 - `src/delivery/DeliveryCoordinator.ts` — последовательный N×M обход, retry boundaries, draft/source restoration;
@@ -179,7 +184,10 @@ Payload и binary Blob живут только в памяти. `localStorage`, 
 - видео, у которого ещё не загрузилась metadata, и видео-кружок: оба должны быть отклонены до recipient picker;
 - видео при почти заполненном хранилище origin: захват должен быть отклонён до recipient picker с явной причиной, а Telegram — остаться работоспособным;
 - после успешного захвата видео в CacheStorage `cachedStreamChunks` не остаётся чанков, вызванных этим захватом;
-- compatible photo/video album — только после подключения model bridge: один native Send и полный grouped result;
+- альбом из 2–10 фото: один native Send, альбом приходит целым, а панель показывает `Отправлено: 1`, а не «Результат неизвестен»;
+- альбом, выбранный частично, и альбом, вызванный из контекстного меню на одной фотографии: оба отклоняются с указанием числа частей;
+- альбом с видео или GIF: отклоняется формулировкой про видео, а не общей ошибкой альбома;
+- альбом при недоступном `window.apiManagerProxy`: поведение возвращается к прежнему отказу, без исключения в консоли;
 - пользовательский draft в destination до success, pre-Send failure и Cancel;
 - recipient/composer/upload-preview rerender;
 - source chat отсутствует в recent list и находится через search fallback;
