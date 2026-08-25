@@ -1,11 +1,38 @@
 /** Captures one complete model-backed photo/video album as an explicit atomic unit. */
 import { createMediaGroupTransferUnit } from "../../domain/TransferUnit";
 import type { SourceMessageDescriptor } from "../../domain/SourceMessageDescriptor";
-import type { TelegramModelMessageSnapshot } from "../TelegramSourceSnapshot";
+import type { TelegramSourceSnapshot } from "../TelegramSourceSnapshot";
 import { BinaryMediaSourceCaptureAdapter } from "./BinaryMediaSourceCaptureAdapter";
 import { CaptureAdapterError } from "./SourceCaptureAdapter";
 
 const MAX_NATIVE_ALBUM_ITEMS = 10;
+
+/**
+ * Reports why one member cannot travel in this album, or null when it can.
+ *
+ * DOM-backed members are restricted to plain photos on purpose. An album holding a video or a GIF
+ * is not merely harder to read: upstream's own `PopupNewMedia.iterate` may split it across several
+ * sends, so the expected outgoing grouping stops being one group and the success criterion this
+ * project confirms against would no longer describe the result. Naming that limit separately keeps
+ * it readable as a deliberate boundary rather than as the album machinery failing.
+ */
+function describeIncompatibleMember(snapshot: TelegramSourceSnapshot): string | null {
+  if (snapshot.identityResolution === "telegram-model") {
+    return snapshot.content.kind === "binary" &&
+      (snapshot.content.role === "photo" || snapshot.content.role === "video")
+      ? null
+      : "Album contains a family that cannot travel as one native media group.";
+  }
+  if (snapshot.videoCount > 0 || snapshot.video) {
+    return "Album with video is not supported yet: Telegram may split it into several sends.";
+  }
+  if (snapshot.hasUnsupportedAttachment) {
+    return "Album contains an attachment that is not an ordinary photo.";
+  }
+  return snapshot.imageCount === 1 && snapshot.imageUrl
+    ? null
+    : "Album members must each be exactly one ordinary photo.";
+}
 
 /** Uses the same binary validation as independent media while preserving group boundaries. */
 export class MediaGroupSourceCaptureAdapter {
@@ -13,7 +40,7 @@ export class MediaGroupSourceCaptureAdapter {
 
   /** Captures exactly one native-compatible group or rejects it before recipient selection. */
   public async capture(
-    snapshots: readonly TelegramModelMessageSnapshot[],
+    snapshots: readonly TelegramSourceSnapshot[],
     descriptors: readonly SourceMessageDescriptor[],
     signal?: AbortSignal,
   ) {
@@ -41,14 +68,16 @@ export class MediaGroupSourceCaptureAdapter {
     if (snapshots.some((snapshot) =>
       snapshot.group.kind !== "complete-model" ||
       snapshot.group.groupedId !== groupedId ||
-      snapshot.group.expectedItemCount !== group.expectedItemCount ||
-      snapshot.content.kind !== "binary" ||
-      (snapshot.content.role !== "photo" && snapshot.content.role !== "video")
+      snapshot.group.expectedItemCount !== group.expectedItemCount
     )) {
       throw new CaptureAdapterError(
         "unsupported-type",
-        "Album contains an incompatible family or inconsistent grouped_id.",
+        "Album members disagree about which group they belong to.",
       );
+    }
+    const incompatible = snapshots.map(describeIncompatibleMember).find(Boolean);
+    if (incompatible) {
+      throw new CaptureAdapterError("unsupported-type", incompatible);
     }
 
     const items = await Promise.all(snapshots.map((snapshot, index) =>

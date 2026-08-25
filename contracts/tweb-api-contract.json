@@ -1,0 +1,20 @@
+{
+  "$comment": "Telegram Web K in-page API symbols this project reads through src/telegram/TelegramModelBridge.ts. Kept apart from tweb-dom-contract.json because these are JavaScript identifiers, not DOM tokens, and they carry a different risk: a private API is unversioned and unannounced, so it breaks more quietly than a CSS class. scripts/check-tweb-contract.mjs verifies each symbol still exists upstream.",
+  "symbols": [
+    {
+      "symbol": "MOUNT_CLASS_TO.apiManagerProxy",
+      "kind": "mount",
+      "note": "The assignment that puts the proxy on window. Upstream sets MOUNT_CLASS_TO to the global context unconditionally (config/debug.ts), which is the only reason a page-realm userscript can reach it at all. If this line goes, the bridge goes with it."
+    },
+    {
+      "symbol": "getMessageByPeer",
+      "kind": "method",
+      "note": "Synchronous message-storage lookup used to read grouped_id for one bubble."
+    },
+    {
+      "symbol": "getMessagesByGroupedId",
+      "kind": "method",
+      "note": "Synchronous mirrors.groupedMessages lookup used to prove how many items an album really has."
+    }
+  ]
+}

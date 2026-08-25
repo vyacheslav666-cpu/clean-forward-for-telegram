@@ -211,6 +211,11 @@ export class SourceCaptureService {
               mid: snapshot.mid,
               date: snapshot.date,
               order,
+              // Carried for the same reason as on a model descriptor: the album unit is built from
+              // descriptors, and it refuses a group whose members cannot all name it.
+              ...(snapshot.group.kind === "complete-model"
+                ? { groupedId: snapshot.group.groupedId }
+                : {}),
             }),
       ));
       return { kind: "valid", snapshots, source, messages };
@@ -317,18 +322,26 @@ export class SourceCaptureService {
           continue;
         }
         emittedGroups.add(groupedId);
+        // Membership is keyed on the proven grouped_id alone. Requiring a model-backed snapshot
+        // here would drop every member the bridge just proved, because their bytes still come from
+        // the DOM — the group is what the model resolves, not the payload.
         const groupIndexes = snapshots.flatMap((candidate, candidateIndex) =>
-          candidate.identityResolution === "telegram-model" &&
-          candidate.group.kind === "complete-model" &&
-          candidate.group.groupedId === groupedId
+          candidate.group.kind === "complete-model" && candidate.group.groupedId === groupedId
             ? [candidateIndex]
             : [],
         );
-        const groupSnapshots = groupIndexes.map((groupIndex) => snapshots[groupIndex]!)
-          .filter((candidate): candidate is TelegramModelMessageSnapshot =>
-            candidate.identityResolution === "telegram-model",
-          );
+        const groupSnapshots = groupIndexes.map((groupIndex) => snapshots[groupIndex]!);
         const groupMessages = groupIndexes.map((groupIndex) => messages[groupIndex]!);
+        // Reached from a context menu on one album photo, and from a partial selection. Both mean
+        // the same thing to the user, and neither may be silently widened into the whole album:
+        // expanding a selection nobody made is exactly what the album policy forbids.
+        if (groupSnapshots.length !== snapshot.group.expectedItemCount) {
+          throw new CaptureAdapterError(
+            "incomplete-selection",
+            `Album can only be copied whole: it has ${snapshot.group.expectedItemCount} parts, ` +
+              `but ${groupSnapshots.length} selected. Select every part in Telegram selection mode.`,
+          );
+        }
         units.push(await this.mediaGroupAdapter.capture(groupSnapshots, groupMessages, signal));
         continue;
       }

@@ -14,6 +14,7 @@ import {
   type ActiveComposerLookupOptions,
 } from "./TelegramComposerDom";
 import { insertTextNatively } from "./nativeTextEditing";
+import { resolveMessageGroup } from "./TelegramModelBridge";
 import { readTelegramText } from "./readTelegramText";
 import type {
   TelegramDomVideoSnapshot,
@@ -251,13 +252,25 @@ export class TelegramDomAdapter {
       message.matches(GROUPED_ITEM_SELECTOR) ||
       message.classList.contains(GROUPED_CLASS) ||
       Boolean(message.querySelector(GROUPED_ITEM_SELECTOR));
+    // The DOM proves only that this element sits in some group. Which group, and how many members
+    // it has, exists solely in Telegram's model, so the album stays ambiguous whenever the bridge
+    // cannot answer — which is the same fail-closed result capture had before the bridge existed.
+    const resolvedGroup = grouped ? resolveMessageGroup(sourcePeerKey, mid) : null;
 
     return {
       identityResolution: "dom-fallback",
       sourcePeerKey,
       mid,
       date: this.readTimestamp(message),
-      group: grouped ? { kind: "ambiguous-dom" } : { kind: "none" },
+      group: resolvedGroup
+        ? {
+            kind: "complete-model",
+            groupedId: resolvedGroup.groupedId,
+            expectedItemCount: resolvedGroup.expectedItemCount,
+          }
+        : grouped
+          ? { kind: "ambiguous-dom" }
+          : { kind: "none" },
       text: textElement
         ? readTelegramText(textElement, {
             ignoredSelectors: MESSAGE_TEXT_IGNORED_SELECTORS,

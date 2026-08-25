@@ -138,12 +138,6 @@ export class TelegramSelectionDomAdapter {
     const selectedElements = this.collectSelectedElements(context.history);
     const identities = new Map<string, HTMLElement>();
     for (const element of selectedElements) {
-      if (element.matches(GROUPED_MESSAGE_SELECTOR) || element.querySelector(GROUPED_MESSAGE_SELECTOR)) {
-        return this.reject(
-          "group-model-required",
-          "Album требует verified grouped_id и полного model snapshot; DOM fallback недостаточен.",
-        );
-      }
       const peerKey = element.dataset.peerId?.trim() ?? "";
       const mid = Number(element.dataset.mid);
       if (!peerKey || !Number.isSafeInteger(mid)) {
@@ -174,6 +168,16 @@ export class TelegramSelectionDomAdapter {
       snapshots.push(snapshot);
     }
 
+    // Grouped elements are allowed through above so the model bridge can identify their album. When
+    // it could not, the DOM alone is back to knowing only that some group exists — which is the
+    // state this adapter has always refused, with this same reason.
+    if (snapshots.some((snapshot) => snapshot.group.kind === "ambiguous-dom")) {
+      return this.reject(
+        "group-model-required",
+        "Album требует verified grouped_id и полного model snapshot; DOM fallback недостаточен.",
+      );
+    }
+
     snapshots.sort((left, right) => left.mid - right.mid);
     return { kind: "captured", snapshots: Object.freeze(snapshots) };
   }
@@ -192,6 +196,14 @@ export class TelegramSelectionDomAdapter {
     return true;
   }
 
+  /**
+   * Collects one element per selected message.
+   *
+   * An album contributes its items, never its container. Upstream marks the container selected too
+   * once all of its mids are (`selection.ts`, `updateElementSelection(groupContainer, …)`), and that
+   * container reads as every photo of the album at once — so keeping it would both inflate the
+   * count and hand capture an element that is not one message.
+   */
   private collectSelectedElements(history: HTMLElement): readonly HTMLElement[] {
     const elements = new Set<HTMLElement>(
       history.querySelectorAll<HTMLElement>(SELECTED_MESSAGE_SELECTOR),
@@ -202,7 +214,8 @@ export class TelegramSelectionDomAdapter {
         elements.add(element);
       }
     }
-    return [...elements];
+    // Filtered once, after both sources, so a container cannot arrive through the checkbox path.
+    return [...elements].filter((element) => !element.querySelector(GROUPED_MESSAGE_SELECTOR));
   }
 
   private readSelectionCount(element: HTMLElement): number | null {

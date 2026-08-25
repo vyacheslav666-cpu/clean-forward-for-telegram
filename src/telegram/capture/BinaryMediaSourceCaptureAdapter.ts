@@ -53,15 +53,18 @@ export class BinaryMediaSourceCaptureAdapter implements SourceCaptureAdapter {
       if (snapshot.video) {
         return this.captureDomVideo(context);
       }
+      // A proven album member is as capturable as a standalone photo: its bytes come from the same
+      // one rendered image. Only an unproven group stays rejected, because there the DOM cannot say
+      // which album this belongs to or how much of it is on screen.
       if (
         snapshot.imageCount !== 1 ||
         !snapshot.imageUrl ||
         snapshot.hasUnsupportedAttachment ||
-        snapshot.group.kind !== "none"
+        (snapshot.group.kind !== "none" && snapshot.group.kind !== "complete-model")
       ) {
         throw new CaptureAdapterError(
           "unsupported-type",
-          "DOM photo fallback requires exactly one ordinary ungrouped image.",
+          "DOM photo fallback requires exactly one ordinary image, standalone or in a proven album.",
         );
       }
       const response = signal

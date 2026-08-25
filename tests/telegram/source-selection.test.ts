@@ -82,6 +82,45 @@ function createAdapters() {
   };
 }
 
+
+/** An album the way selection mode leaves it: every item selected, container selected too. */
+function installSelectedAlbum(
+  history: HTMLElement,
+  mids: readonly number[],
+  peerKey = "20",
+): HTMLElement[] {
+  const bubble = document.createElement("div");
+  bubble.className = "bubble is-grouped is-selected";
+  bubble.dataset.mid = String(mids[0]);
+  bubble.dataset.peerId = peerKey;
+  const items = mids.map((mid) => {
+    const item = document.createElement("div");
+    item.className = "grouped-item is-selected";
+    item.dataset.mid = String(mid);
+    item.dataset.peerId = peerKey;
+    const attachment = document.createElement("div");
+    attachment.className = "attachment";
+    const image = document.createElement("img");
+    image.className = "media-photo";
+    Object.defineProperty(image, "currentSrc", { value: `blob:photo-${mid}`, configurable: true });
+    attachment.append(image);
+    item.append(attachment);
+    bubble.append(item);
+    return item;
+  });
+  history.append(bubble);
+  return items;
+}
+
+/** Stands in for the live model bridge. */
+function installAlbumBridge(mids: readonly number[], peerKey = "20"): void {
+  vi.stubGlobal("apiManagerProxy", {
+    getMessageByPeer: (_peerId: number, mid: number) =>
+      mids.includes(mid) ? { mid, peerId: Number(peerKey), grouped_id: "9001" } : undefined,
+    getMessagesByGroupedId: () =>
+      mids.map((mid) => ({ mid, peerId: Number(peerKey), grouped_id: "9001" })),
+  });
+}
 describe("Telegram native source selection", () => {
   it("captures one immutable source navigation target with the selection context", () => {
     selectionFixture(1);
@@ -205,8 +244,10 @@ describe("Telegram native source selection", () => {
     const fixture = selectionFixture(1);
     const album = selectedMessage(fixture.history, 10, "album");
     album.classList.add("is-grouped");
+    // Upstream selects an album by toggling each item, and marks the container only as a
+    // consequence (selection.ts). The item is therefore what carries the selection.
     const item = document.createElement("div");
-    item.className = "grouped-item";
+    item.className = "grouped-item is-selected";
     item.dataset.mid = "10";
     item.dataset.peerId = "20";
     album.append(item);
@@ -306,5 +347,37 @@ describe("Telegram native source selection", () => {
     selectedMessage(second.history, 20, "second");
     integration.ensureAction(adapter.findActiveContext()!, vi.fn());
     expect(second.toolbar.querySelectorAll("[data-clean-forward-selection-action]")).toHaveLength(1);
+  });
+
+  it("captures a whole album selected in selection mode", () => {
+    const fixture = selectionFixture(3);
+    installSelectedAlbum(fixture.history, [70, 71, 72]);
+    installAlbumBridge([70, 71, 72]);
+    const { adapter } = createAdapters();
+
+    const result = adapter.readSelectedSnapshots(adapter.findActiveContext()!);
+
+    expect(result.kind).toBe("captured");
+    if (result.kind !== "captured") return;
+    // The container is selected too once every item is, but it is not a message.
+    expect(result.snapshots.map(({ mid }) => mid)).toEqual([70, 71, 72]);
+    expect(result.snapshots.every((snapshot) => snapshot.group.kind === "complete-model")).toBe(true);
+  });
+
+  it("refuses a partially selected album rather than widening it", () => {
+    const fixture = selectionFixture(2);
+    const items = installSelectedAlbum(fixture.history, [70, 71, 72]);
+    items[2]!.classList.remove("is-selected");
+    installAlbumBridge([70, 71, 72]);
+    const { adapter } = createAdapters();
+
+    const result = adapter.readSelectedSnapshots(adapter.findActiveContext()!);
+
+    // Two of three are captured here; the whole-album requirement is enforced at capture, where
+    // expectedItemCount is compared against what was actually selected.
+    expect(result.kind).toBe("captured");
+    if (result.kind !== "captured") return;
+    expect(result.snapshots).toHaveLength(2);
+    expect(result.snapshots[0]?.group).toMatchObject({ expectedItemCount: 3 });
   });
 });

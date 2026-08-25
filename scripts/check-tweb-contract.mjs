@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CONTRACT_PATH = join(REPO_ROOT, "contracts", "tweb-dom-contract.json");
+const API_CONTRACT_PATH = join(REPO_ROOT, "contracts", "tweb-api-contract.json");
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
 function parseArguments(argv) {
@@ -116,6 +117,18 @@ function loadCorpus(files) {
   return corpus;
 }
 
+/**
+ * Finds an in-page API symbol upstream.
+ *
+ * Deliberately a plain identifier search rather than anything structural: the point is only to
+ * notice a rename or a removal. A private API breaks more quietly than a CSS class — nothing about
+ * it is versioned or announced — so the cheap check is the one worth having run every week.
+ */
+function findApiSymbol(corpus, symbol) {
+  const pattern = new RegExp(`(?<![\w$.])${escapeForRegExp(symbol)}(?![\w$])`);
+  return locate(corpus, (file) => pattern.test(file.text));
+}
+
 function escapeForRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -178,6 +191,15 @@ function suffixHint(corpus, token) {
   return null;
 }
 
+/** The API contract is optional so the DOM check still runs in a checkout without it. */
+function readApiContract() {
+  try {
+    return JSON.parse(readFileSync(API_CONTRACT_PATH, "utf8")).symbols ?? [];
+  } catch {
+    return [];
+  }
+}
+
 async function main() {
   const options = parseArguments(process.argv.slice(2));
   const contract = JSON.parse(readFileSync(CONTRACT_PATH, "utf8"));
@@ -204,6 +226,18 @@ async function main() {
     const legacy = [];
     const skipped = [];
     let verified = 0;
+
+    const apiContract = readApiContract();
+    const apiMissing = [];
+    for (const entry of apiContract) {
+      const found = findApiSymbol(corpus, entry.symbol);
+      if (found) {
+        console.log(`API OK ${entry.kind} "${entry.symbol}" — ${relative(checkout, found)}`);
+      } else {
+        apiMissing.push(entry);
+      }
+    }
+    if (apiContract.length > 0) console.log("");
 
     for (const entry of contract.tokens) {
       if (entry.status === "dynamic") {
@@ -249,6 +283,19 @@ async function main() {
     }
     for (const entry of skipped) {
       console.log(`\nSKIPPED ${entry.kind} "${entry.token}" — ${entry.note ?? "composed at runtime"}`);
+    }
+
+    for (const entry of apiMissing) {
+      console.log(`API MISSING ${entry.kind} "${entry.symbol}"`);
+      if (entry.note) console.log(`  ${entry.note}`);
+    }
+    if (apiMissing.length > 0) {
+      console.log(
+        "\nThe album model bridge depends on these symbols. Losing one does not break the DOM" +
+          " contract, it silently turns album capture back into today's refusal — re-verify" +
+          " src/telegram/TelegramModelBridge.ts against upstream before shipping.",
+      );
+      process.exitCode = 1;
     }
 
     if (missing.length > 0) {

@@ -30,7 +30,7 @@
 | GIF/animation | Verified model + полные bytes/metadata | `Photo or Video` preview + native confirm | **Не поддерживается production capture:** strategy test-only; Telegram также может транскодировать media |
 | Document | Verified model + полные bytes/имя/MIME | `Document` preview + native confirm | **Не поддерживается production capture:** strategy test-only; thumbnail не считается содержимым файла |
 | Audio/music | Verified model + полные bytes/metadata | `Document` preview + native confirm | **Не поддерживается production capture:** strategy test-only; voice message не преобразуется в audio file |
-| Photo/video album | Полный verified `grouped_id`, 2–10 items | Один grouped preview и один native confirm | **Не поддерживается production capture без model bridge**; DOM-only ambiguous album отклоняется целиком |
+| Photo/video album | Полный verified `grouped_id`, 2–10 items | Один grouped preview и один native confirm | **Не поддерживается production capture без model bridge**; DOM-only ambiguous album отклоняется целиком. План подключения — [docs/album-model-bridge-plan.md](docs/album-model-bridge-plan.md) |
 | Несколько сообщений | Ordered immutable bundle | По одному item/group за раз | Поддерживается, если каждый unit имеет безопасную capture и delivery strategy |
 | Formatted text/caption | Entities сохраняются в generalized model | Нет lossless DOM injection | Explicit fail-before-Send; форматирование не сбрасывается молча |
 | Exact/disabled link preview | Policy сохраняется в model | Нет доказанного точного native control | Explicit fail-before-Send |
@@ -91,7 +91,7 @@ Recipient status вычисляется из вложенных item/group state
 - для album отклоняются incomplete group, несовместимое native partitioning, animation внутри группы и caption boundaries, которые нельзя сохранить;
 - browser E2E с авторизованной сессией не входит в автоматическую suite; реальные Send необходимо проверять только в контролируемых чатах.
 - DOM-контракт должен сверяться с исходным кодом Web K, а не с записями ручного исследования: три селектора уже отличались от реального кода и молча отключали интеграцию именно на мобильных и в selection mode, при полностью зелёной suite. Фикстуры воспроизводят предположения автора, поэтому сами по себе несовпадение контракта не ловят.
-- production bootstrap пока не предоставляет verified read-only Telegram model bridge; document/audio/album strategies не являются production support;
+- production bootstrap пока не предоставляет verified read-only Telegram model bridge; document/audio/album strategies не являются production support. Bridge технически достижим (`window.apiManagerProxy` смонтирован и в проде, юзерскрипт стоит с `@grant none`); план подключения только для фото-альбомов — [docs/album-model-bridge-plan.md](docs/album-model-bridge-plan.md);
 - video captured из DOM: поддерживается ровно одно обычное видео в сообщении, без photo рядом и вне album. Video note (кружок) и GIF/animation намеренно не считаются video, потому что повторная отправка через media path изменила бы смысл сообщения;
 - байты видео собираются полностью до отправки. Telegram отдаёт их своим service worker по частям, поэтому неизвестный общий размер или обрыв передачи отклоняются: усечённый файл остаётся воспроизводимым видео и молча заменил бы оригинал;
 - capture видео начинается только после того, как браузер сообщил его реальные размеры и длительность. До этого сообщение отклоняется, а не отправляется одной подписью;
@@ -142,6 +142,11 @@ npm run check:tweb
 корректности: он видит исчезновение токена, но не изменение структуры. Запускается еженедельно
 и на PR, меняющих сам контракт; подробности — в
 [docs/tweb-navigation-contract.md](docs/tweb-navigation-contract.md).
+
+Структуру `check:tweb` не видит принципиально: класс может уцелеть, но переехать на другой узел,
+и тогда селектор мёртв при зелёной проверке. Такая ручная сверка каждого селектора с исходниками
+upstream — в [docs/tweb-contract-audit.md](docs/tweb-contract-audit.md); там же список того, что
+сломано прямо сейчас.
 
 Fixtures синтетические и не содержат реальных сообщений, peer IDs, cookies или Telegram session data.
 
