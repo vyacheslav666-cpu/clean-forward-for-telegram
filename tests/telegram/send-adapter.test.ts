@@ -183,6 +183,63 @@ describe("TelegramSendAdapter", () => {
   });
 
   /**
+   * The live failure: a delivered album reported "several messages after one Send".
+   *
+   * Web K gives the album bubble a `data-mid` of its own — the group's main message — so the
+   * bubble and its first photo publish the same identity. Counting matched nodes turned an album
+   * of N into N + 1 outgoing messages, and every successful album delivery ended as `unknown`.
+   */
+  it("confirms an album whose bubble repeats the mid of one of its photos", async () => {
+    const { button } = installAlbumSend("8");
+    const adapter = new TelegramSendAdapter();
+    button.addEventListener("click", () => {
+      const group = document.createElement("div");
+      group.className = "bubble is-out";
+      group.dataset.peerId = "8";
+      group.dataset.mid = "9001";
+      for (const mid of ["9001", "9002"]) {
+        const item = document.createElement("div");
+        item.className = "grouped-item";
+        item.dataset.mid = mid;
+        group.append(item);
+      }
+      document.body.append(group);
+    });
+
+    const sending = adapter.sendPreparedUnit(
+      albumUnitFixture(),
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    );
+
+    await expect(sending).resolves.toEqual({
+      status: "sent",
+      messageId: "9001",
+      messageIds: ["9001", "9002"],
+    });
+  });
+
+  it("still stops as unknown when a second unrelated message appears after one Send", async () => {
+    vi.useFakeTimers();
+    const { button } = installTextSend("8", "fixture-text");
+    button.addEventListener("click", () => {
+      appendOutgoing("8", "7001");
+      appendOutgoing("8", "7002");
+    });
+
+    const sending = new TelegramSendAdapter().sendPrepared(
+      { kind: "text", text: "fixture-text" },
+      "8",
+      new AbortController().signal,
+      vi.fn(),
+    );
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(await sending).toMatchObject({ status: "unknown" });
+  });
+
+  /**
    * Web K clears `is-outgoing` from the album bubble as soon as its first part is acknowledged,
    * so the bubble class alone would confirm an album whose remaining items are still uploading.
    */

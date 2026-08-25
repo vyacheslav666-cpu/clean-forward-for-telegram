@@ -19,6 +19,7 @@ import {
   MESSAGE_TEXT_IGNORED_SELECTORS,
   MESSAGE_TEXT_SELECTOR,
   OUTGOING_BUBBLE_SELECTOR,
+  OUTGOING_GROUPED_ITEM_SELECTOR,
   PREVIEW_ALBUM_SELECTOR,
   PREVIEW_DOCUMENT_ITEM_SELECTOR,
   PREVIEW_IMAGE_SELECTOR,
@@ -429,11 +430,31 @@ export class TelegramSendAdapter {
     return normalizeText(observed).trim() === normalizeText(payload.text).trim();
   }
 
+  /**
+   * New outgoing message identities, not new matched nodes.
+   *
+   * An album is one `.bubble.is-out` carrying the mid of the group's main message plus one
+   * `.grouped-item[data-mid]` per photo, so counting matched nodes counted that one message twice:
+   * an album of N looked like N + 1 outgoing messages and every successful album delivery ended in
+   * "several messages appeared after one Send". Identities are therefore collapsed by `data-mid`,
+   * keeping the grouped item, which is the node Web K rewrites per photo on acknowledgement.
+   *
+   * A bubble whose mid belongs to no item of its own stays counted separately: that would be a
+   * second real message, which is exactly what the check exists to catch.
+   */
   private findNewOutgoing(wait: OutgoingWait): HTMLElement[] {
-    return this.findOutgoingBubbles(wait.expectedPeerKey).filter((bubble) => {
-      const messageId = bubble.dataset.mid;
-      return Boolean(messageId && !wait.baselineIds.has(messageId));
-    });
+    const identities = new Map<string, HTMLElement>();
+    for (const element of this.findOutgoingBubbles(wait.expectedPeerKey)) {
+      const messageId = element.dataset.mid;
+      if (!messageId || wait.baselineIds.has(messageId)) {
+        continue;
+      }
+      const known = identities.get(messageId);
+      if (!known || element.matches(OUTGOING_GROUPED_ITEM_SELECTOR)) {
+        identities.set(messageId, element);
+      }
+    }
+    return Array.from(identities.values());
   }
 
   private hasOutgoingInFlight(wait: OutgoingWait): boolean {

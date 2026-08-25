@@ -170,6 +170,14 @@ export const OUTGOING_BUBBLE_SELECTOR = ".bubble.is-out";
 export const CONFIRMED_OUTGOING_SELECTOR =
   ".bubble.is-out[data-mid][data-peer-id], .bubble.is-out .grouped-item[data-mid]";
 /**
+ * One album photo inside its bubble.
+ *
+ * An album bubble carries a `data-mid` of its own — the group's main message — so the bubble and
+ * one of its items publish the same identity. This is the node that identity really belongs to:
+ * Web K rewrites each grouped item's mid separately when the server acknowledges that photo.
+ */
+export const OUTGOING_GROUPED_ITEM_SELECTOR = ".grouped-item[data-mid]";
+/**
  * `is-outgoing` plus the `is-sending` status class mark a message still in flight.
  *
  * A third member, `.sending`, was dropped: no `classList` call in upstream ever sets it, so it
