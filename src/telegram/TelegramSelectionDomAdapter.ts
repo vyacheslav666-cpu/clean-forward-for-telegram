@@ -1,6 +1,9 @@
 /** Reads native Telegram selection state through the strict fail-closed DOM fallback. */
 import type { Logger } from "../utils/logger";
-import { findActiveComposerContext } from "./TelegramComposerDom";
+import {
+  findActiveComposerContext,
+  findActiveReadOnlyPeerContext,
+} from "./TelegramComposerDom";
 import type { TelegramDomAdapter } from "./TelegramDomAdapter";
 import type {
   TelegramMessageSnapshot,
@@ -82,8 +85,14 @@ export class TelegramSelectionDomAdapter {
     }
 
     // Selection mode replaces the visible message input with this plate, so the composer element
-    // proves peer identity here without being required to stay visible itself.
-    const composer = findActiveComposerContext({ allowHiddenComposer: true });
+    // proves peer identity here without being required to stay visible itself — nor writable.
+    // A broadcast channel is read-only by definition and is this tool's main source; requiring an
+    // editable input meant the action never mounted there at all, and the selection menu silently
+    // fell back to acting on one long-pressed bubble while Telegram's own menu meant the whole set.
+    // Only the identity source is relaxed: container and chat ownership below are unchanged, and
+    // writability still gates every path that writes, none of which is here.
+    const composer =
+      findActiveComposerContext({ allowHiddenComposer: true }) ?? findActiveReadOnlyPeerContext();
     const sourceTarget = composer ? this.dom.readSourceTargetSnapshot(composer.peerId) : null;
     if (
       !composer ||

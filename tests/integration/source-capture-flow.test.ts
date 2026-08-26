@@ -92,11 +92,14 @@ function installContextMenu(labels: readonly string[], { wrapped = false } = {})
   return { wrapper, items };
 }
 
-function installSelection(count: number) {
+function installSelection(count: number, { readOnly = false }: { readOnly?: boolean } = {}) {
   const history = document.createElement("div");
   history.className = "bubbles is-selecting";
   document.body.append(history);
   const composer = installComposer("20");
+  if (readOnly) {
+    composer.setAttribute("contenteditable", "false");
+  }
   composer.parentElement!.classList.add("is-selecting");
   const wrapper = document.createElement("div");
   wrapper.className = "chat-input-wrapper selection-wrapper";
@@ -185,6 +188,31 @@ describe("source capture entrypoints", () => {
     expect(payload?.units).toHaveLength(3);
     expect(menu.wrapper.classList.contains("active")).toBe(false);
     expect(selection.wrapper.isConnected).toBe(false);
+  });
+
+  /**
+   * The quieter half of the same failure. With no selection context, the menu item fell back to
+   * the single long-pressed bubble while Telegram's menu in selection mode means the whole set —
+   * so a channel selection would have sent one message where the visible menu promised five.
+   */
+  it("forwards the whole selected set from a channel with no writable composer", async () => {
+    const selection = installSelection(2, { readOnly: true });
+    appendSelected(selection.history, 11, "second channel post");
+    appendSelected(selection.history, 10, "first channel post");
+    const menu = installContextMenu(["Copy selected", "Forward selected", "Clear selection"]);
+    const harness = createController();
+    harness.controller.start();
+
+    selection.history.querySelector<HTMLElement>('[data-mid="11"]')!
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    await Promise.resolve();
+    const action = menu.items.querySelector<HTMLElement>("[data-clean-forward-context-action]")!;
+    expect(action.textContent).toContain(SELECTION_ACTION_LABEL);
+
+    action.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+
+    await vi.waitFor(() => expect(harness.recipients.open).toHaveBeenCalledOnce());
+    expect(harness.pending.peek()?.messages.map(({ mid }) => mid)).toEqual([10, 11]);
   });
 
   it("reaches the selection menu on touch, where Telegram dispatches no contextmenu event", async () => {

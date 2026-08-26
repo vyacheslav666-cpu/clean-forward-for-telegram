@@ -14,11 +14,23 @@ interface SelectionFixture {
   readonly forward: HTMLButtonElement;
 }
 
-function selectionFixture(count: number, peerKey = "20"): SelectionFixture {
+/**
+ * @param readOnly Renders the chat the way Web K renders a broadcast channel: the input node is
+ * still bound to the peer but is not editable, because the user cannot post there. That is the
+ * shape of this tool's main source, and the shape in which the action failed to mount at all.
+ */
+function selectionFixture(
+  count: number,
+  peerKey = "20",
+  { readOnly = false }: { readOnly?: boolean } = {},
+): SelectionFixture {
   const history = document.createElement("div");
   history.className = "bubbles is-selecting";
   document.body.append(history);
   const composer = installComposer(peerKey);
+  if (readOnly) {
+    composer.setAttribute("contenteditable", "false");
+  }
   composer.parentElement!.classList.add("is-selecting");
   const wrapper = document.createElement("div");
   wrapper.className = "chat-input-wrapper selection-wrapper";
@@ -122,6 +134,77 @@ function installAlbumBridge(mids: readonly number[], peerKey = "20"): void {
   });
 }
 describe("Telegram native source selection", () => {
+  /**
+   * The live failure: in a channel the user cannot post to, the action never appeared in Web K's
+   * selection toolbar. Identity was resolved only through an editable composer, which a broadcast
+   * peer never has — while nothing about reading a selection needs one.
+   */
+  it("mounts the toolbar action in a channel with no writable composer", () => {
+    const fixture = selectionFixture(1, "20", { readOnly: true });
+    selectedMessage(fixture.history, 10, "channel post");
+    installDialogRow("20", "Channel").classList.add("active");
+    const { adapter, integration } = createAdapters();
+
+    const context = adapter.findActiveContext();
+    expect(context?.sourcePeerKey).toBe("20");
+    integration.ensureAction(context!, vi.fn());
+
+    expect(
+      fixture.toolbar.querySelector("[data-clean-forward-selection-action]"),
+    ).not.toBeNull();
+    expect(document.querySelector('.input-message-input[contenteditable="true"]')).toBeNull();
+  });
+
+  it("captures a read-only channel selection end to end", () => {
+    const fixture = selectionFixture(2, "20", { readOnly: true });
+    selectedMessage(fixture.history, 20, "second");
+    selectedMessage(fixture.history, 10, "first");
+    const { adapter } = createAdapters();
+
+    const result = adapter.readSelectedSnapshots(adapter.findActiveContext()!);
+
+    expect(result.kind).toBe("captured");
+    if (result.kind !== "captured") return;
+    expect(result.snapshots.map(({ mid }) => mid)).toEqual([10, 20]);
+  });
+
+  /**
+   * The dangerous half: a chat caught mid-transition still shows the previous peer on that node,
+   * and a non-editable input must not turn that into a capture of someone else's messages.
+   */
+  it("refuses a read-only selection whose messages belong to another peer", () => {
+    const fixture = selectionFixture(1, "20", { readOnly: true });
+    selectedMessage(fixture.history, 10, "from the chat Web K is still leaving", "21");
+    const { adapter } = createAdapters();
+
+    const result = adapter.readSelectedSnapshots(adapter.findActiveContext()!);
+
+    expect(result).toMatchObject({ kind: "rejected", code: "mixed-peer" });
+  });
+
+  it("still requires the read-only chat to own the selection toolbar", () => {
+    const fixture = selectionFixture(1, "20", { readOnly: true });
+    selectedMessage(fixture.history, 10, "selected");
+    // The plate moves out of the chat-input container that carries the peer-bound input.
+    document.body.append(fixture.wrapper);
+    const { adapter } = createAdapters();
+
+    expect(adapter.findActiveContext()).toBeNull();
+  });
+
+  it("refuses a read-only shell that exposes more than one peer-bound input", () => {
+    const fixture = selectionFixture(1, "20", { readOnly: true });
+    selectedMessage(fixture.history, 10, "selected");
+    const second = document.createElement("div");
+    second.className = "input-message-input";
+    second.setAttribute("contenteditable", "false");
+    second.dataset.peerId = "21";
+    document.body.append(second);
+    const { adapter } = createAdapters();
+
+    expect(adapter.findActiveContext()).toBeNull();
+  });
+
   it("captures one immutable source navigation target with the selection context", () => {
     selectionFixture(1);
     const row = installDialogRow("20", "Selection source");

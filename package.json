@@ -14,13 +14,15 @@
   ],
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && npm run build:userscript && npm run build:extension",
     "dev": "vite build --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "check:tweb": "node scripts/check-tweb-contract.mjs",
-    "validate": "npm run typecheck && npm test && npm run build"
+    "validate": "npm run typecheck && npm test && npm run build",
+    "build:userscript": "vite build",
+    "build:extension": "vite build --mode extension"
   },
   "devDependencies": {
     "jsdom": "^26.1.0",

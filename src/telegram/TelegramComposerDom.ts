@@ -117,31 +117,48 @@ export function isActivePeer(peerId: string): boolean {
  */
 export function findActiveReadOnlyPeerContext(): TelegramComposerContext | null {
   const mainChats = document.querySelector<HTMLElement>(MAIN_CHATS_SELECTOR);
-  const activeChats = mainChats?.querySelectorAll<HTMLElement>(ACTIVE_MAIN_CHAT_SELECTOR);
-  if (!activeChats || activeChats.length !== 1) {
-    return null;
-  }
-  const chat = activeChats.item(0);
-  if (!chat.isConnected || chat.closest(HIDDEN_CHAT_ANCESTOR_SELECTOR)) {
-    return null;
+  if (mainChats) {
+    const activeChats = mainChats.querySelectorAll<HTMLElement>(ACTIVE_MAIN_CHAT_SELECTOR);
+    if (activeChats.length !== 1) {
+      return null;
+    }
+    const chat = activeChats.item(0);
+    if (!chat.isConnected || chat.closest(HIDDEN_CHAT_ANCESTOR_SELECTOR)) {
+      return null;
+    }
+
+    const containers = chat.querySelectorAll<HTMLElement>(OWNED_COMPOSER_CONTAINER_SELECTOR);
+    if (containers.length !== 1) {
+      return null;
+    }
+    const container = containers.item(0);
+    const composers = container.querySelectorAll<HTMLElement>(READ_ONLY_COMPOSER_SELECTOR);
+    if (composers.length !== 1) {
+      return null;
+    }
+
+    const composer = composers.item(0);
+    const peerId = composer.dataset.peerId?.trim() ?? "";
+    if (!peerId || composer.closest(CHAT_SELECTOR) !== chat) {
+      return null;
+    }
+    return { composer, container, chat, peerId };
   }
 
-  const containers = chat.querySelectorAll<HTMLElement>(OWNED_COMPOSER_CONTAINER_SELECTOR);
-  if (containers.length !== 1) {
-    return null;
-  }
-  const container = containers.item(0);
-  const composers = container.querySelectorAll<HTMLElement>(READ_ONLY_COMPOSER_SELECTOR);
+  // Isolated fixtures and older shells have no main-chat root, and the strict lookup keeps the
+  // same uniqueness rule there. The two must differ in editability alone: any second difference
+  // would make "where does the action mount" a rule nothing states.
+  const composers = document.querySelectorAll<HTMLElement>(READ_ONLY_COMPOSER_SELECTOR);
   if (composers.length !== 1) {
     return null;
   }
-
   const composer = composers.item(0);
+  const container = composer.closest<HTMLElement>(COMPOSER_CONTAINER_SELECTOR);
   const peerId = composer.dataset.peerId?.trim() ?? "";
-  if (!peerId || composer.closest(CHAT_SELECTOR) !== chat) {
+  if (!container || !peerId) {
     return null;
   }
-  return { composer, container, chat, peerId };
+  return { composer, container, chat: null, peerId };
 }
 
 /**
