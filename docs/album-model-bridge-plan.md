@@ -78,7 +78,7 @@ Telegram model bridge; document/audio/album strategies не являются pro
 
 - `MOUNT_CLASS_TO = DEBUG || true ? ctx : {}` — то есть **всегда `window`**, и в проде тоже (`src/config/debug.ts:10`);
 - `MOUNT_CLASS_TO.apiManagerProxy = apiManagerProxy` (`src/lib/apiManagerProxy.ts:1441`);
-- юзерскрипт стоит с `@grant none` ([vite.config.ts:13](../vite.config.ts:13)) → крутится в контексте страницы, без песочницы Tampermonkey;
+- юзерскрипт стоит с `@grant none` ([vite.config.ts:13](../vite.config.ts:13)) → крутится в контексте страницы, без песочницы Tampermonkey. Появившаяся позже extension-сборка объявляет ровно ради этого `world: "MAIN"`: в изолированном мире content script `apiManagerProxy` со страницы не виден, и альбомы молча вернулись бы к отказу;
 - имена методов пережили минификацию — доказано консольной проверкой выше.
 
 ### Нужная цепочка — синхронная и без сети

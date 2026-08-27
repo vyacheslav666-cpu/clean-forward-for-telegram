@@ -1,7 +1,7 @@
 {
   "name": "clean-forward-for-telegram",
-  "version": "0.1.11",
-  "description": "Experimental Tampermonkey userscript for preparing clean copies of Telegram messages.",
+  "version": "0.1.12",
+  "description": "Experimental userscript and Chrome extension for preparing clean copies of Telegram messages.",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -10,7 +10,8 @@
   "keywords": [
     "telegram",
     "tampermonkey",
-    "userscript"
+    "userscript",
+    "chrome-extension"
   ],
   "type": "module",
   "scripts": {
