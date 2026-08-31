@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Store upload artefact, rebuilt by `npm run package:extension`
+clean-forward-*.zip
 coverage/
 test-results/
 playwright-report/
